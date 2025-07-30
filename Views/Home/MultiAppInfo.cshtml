@@ -1,0 +1,148 @@
+﻿@model Ext_ID_OIDC_web_Application.Models.MultiAppAuthViewModel
+@{
+    ViewData["Title"] = "Multi-App Authentication Info";
+}
+
+<div class="container">
+    <div class="row">
+        <div class="col-12">
+            <h1 class="display-4 text-center mb-4">Multi-Application Authentication Information</h1>
+
+            @if (Model.IsAuthenticated)
+            {
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="card mb-4">
+                            <div class="card-header bg-primary text-white">
+                                <h5 class="card-title mb-0">
+                                    <i class="fas fa-user-check"></i> Authentication Details
+                                </h5>
+                            </div>
+                            <div class="card-body">
+                                <dl class="row">
+                                    <dt class="col-sm-4">User</dt>
+                                    <dd class="col-sm-8">@Model.AuthenticatedUser</dd>
+
+                                    <dt class="col-sm-4">Application</dt>
+                                    <dd class="col-sm-8">
+                                        <span class="badge bg-info">@Model.ApplicationName</span>
+                                    </dd>
+
+                                    <dt class="col-sm-4">Auth Scheme</dt>
+                                    <dd class="col-sm-8">
+                                        <code>@Model.AuthenticationScheme</code>
+                                    </dd>
+
+                                    <dt class="col-sm-4">Client ID</dt>
+                                    <dd class="col-sm-8">
+                                        <code class="text-break">@Model.ClientId</code>
+                                    </dd>
+                                </dl>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-md-6">
+                        <div class="card mb-4">
+                            <div class="card-header bg-success text-white">
+                                <h5 class="card-title mb-0">
+                                    <i class="fas fa-graph"></i> Graph API Status
+                                </h5>
+                            </div>
+                            <div class="card-body">
+                                @if (Model.GraphApiInfo?.IsConnected == true)
+                                {
+                                    <div class="alert alert-success">
+                                        <i class="fas fa-check-circle"></i> Connected to Graph API
+                                    </div>
+                                    <dl class="row">
+                                        <dt class="col-sm-4">Display Name</dt>
+                                        <dd class="col-sm-8">@Model.GraphApiInfo.DisplayName</dd>
+
+                                        <dt class="col-sm-4">UPN</dt>
+                                        <dd class="col-sm-8">@Model.GraphApiInfo.UserPrincipalName</dd>
+
+                                        <dt class="col-sm-4">Email</dt>
+                                        <dd class="col-sm-8">@Model.GraphApiInfo.Mail</dd>
+
+                                        <dt class="col-sm-4">Job Title</dt>
+                                        <dd class="col-sm-8">@Model.GraphApiInfo.JobTitle</dd>
+
+                                        <dt class="col-sm-4">Department</dt>
+                                        <dd class="col-sm-8">@Model.GraphApiInfo.Department</dd>
+                                    </dl>
+                                }
+                                else
+                                {
+                                    <div class="alert alert-danger">
+                                        <i class="fas fa-exclamation-triangle"></i> Graph API Connection Failed
+                                    </div>
+                                    @if (!string.IsNullOrEmpty(Model.GraphApiInfo?.ErrorMessage))
+                                    {
+                                        <p class="text-danger">@Model.GraphApiInfo.ErrorMessage</p>
+                                    }
+                                }
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row">
+                    <div class="col-12">
+                        <div class="card">
+                            <div class="card-header bg-secondary text-white">
+                                <h5 class="card-title mb-0">
+                                    <i class="fas fa-list"></i> User Claims
+                                </h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-striped">
+                                        <thead>
+                                            <tr>
+                                                <th>Claim Type</th>
+                                                <th>Value</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            @foreach (var claim in Model.Claims)
+                                            {
+                                                <tr>
+                                                    <td><code>@claim.Type</code></td>
+                                                    <td class="text-break">@claim.Value</td>
+                                                </tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row mt-4">
+                    <div class="col-12 text-center">
+                        <a href="/Home/Index" class="btn btn-primary">
+                            <i class="fas fa-home"></i> Back to Home
+                        </a>
+                        <a href="/Home/Profile" class="btn btn-info">
+                            <i class="fas fa-user"></i> View Profile
+                        </a>
+                    </div>
+                </div>
+            }
+            else
+            {
+                <div class="alert alert-warning">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <strong>Not Authenticated:</strong> Please sign in to view authentication information.
+                </div>
+                <div class="text-center">
+                    <a href="/Home/Index" class="btn btn-primary">
+                        <i class="fas fa-sign-in-alt"></i> Go to Sign In
+                    </a>
+                </div>
+            }
+        </div>
+    </div>
+</div> 
