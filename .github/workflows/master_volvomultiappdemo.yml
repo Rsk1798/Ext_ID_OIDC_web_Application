@@ -52,4 +52,4 @@ jobs:
           app-name: 'VolvoMultiAppDemo'
           slot-name: 'Production'
           package: .
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_7CEF204226E74E76898F6E623DE7EDC1 }}
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_B8951342A73C4ED1A0988D7B2A75D0AF }}
