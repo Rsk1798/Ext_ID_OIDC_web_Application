@@ -54,8 +54,8 @@ builder.Services
     })
     .AddOpenIdConnect("DefaultScheme", options => {
         // Manually configure options instead of using Bind
-        options.Authority = "https://volvogroupextid.ciamlogin.com/volvogroupextid.onmicrosoft.com";
-        options.MetadataAddress = "https://volvogroupextid.ciamlogin.com/volvogroupextid.onmicrosoft.com/v2.0/.well-known/openid-configuration";
+        options.Authority = "https://volvogroupextiddev.ciamlogin.com/volvogroupextiddev.onmicrosoft.com";
+        options.MetadataAddress = "https://volvogroupextiddev.ciamlogin.com/volvogroupextiddev.onmicrosoft.com/v2.0/.well-known/openid-configuration";
         options.ClientId = "4731edbb-bf60-41dd-ad4e-e912903a6f5f";// "YOUR_DEFAULT_APP_CLIENT_ID";
         options.ClientSecret = "35c8Q~E0I5aDxogG_HDa8KZ30NDI6tTCtx352c6K";// "YOUR_DEFAULT_APP_CLIENT_SECRET";
         options.CallbackPath = "/signin-oidc";
@@ -164,8 +164,8 @@ builder.Services
     })
     .AddOpenIdConnect("App1Scheme", options => {
         // App1 Configuration
-        options.Authority = "https://volvogroupextid.ciamlogin.com/volvogroupextid.onmicrosoft.com";
-        options.MetadataAddress = "https://volvogroupextid.ciamlogin.com/volvogroupextid.onmicrosoft.com/v2.0/.well-known/openid-configuration";
+        options.Authority = "https://volvogroupextiddev.ciamlogin.com/volvogroupextiddev.onmicrosoft.com";
+        options.MetadataAddress = "https://volvogroupextiddev.ciamlogin.com/volvogroupextiddev.onmicrosoft.com/v2.0/.well-known/openid-configuration";
         options.ClientId = "6bc083e2-7d23-4506-9197-9efdf15b1447"; // "YOUR_APP1_CLIENT_ID";
         options.ClientSecret = "OWB8Q~JLA_lz3elfmJfDcbzZwatK4Ul.xKedAcla"; // "YOUR_APP1_CLIENT_SECRET";
         options.CallbackPath = "/signin-oidc-app1";
@@ -252,8 +252,8 @@ builder.Services
     })
     .AddOpenIdConnect("App2Scheme", options => {
         // App2 Configuration
-        options.Authority = "https://volvogroupextid.ciamlogin.com/volvogroupextid.onmicrosoft.com";
-        options.MetadataAddress = "https://volvogroupextid.ciamlogin.com/volvogroupextid.onmicrosoft.com/v2.0/.well-known/openid-configuration";
+        options.Authority = "https://volvogroupextiddev.ciamlogin.com/volvogroupextiddev.onmicrosoft.com";
+        options.MetadataAddress = "https://volvogroupextiddev.ciamlogin.com/volvogroupextiddev.onmicrosoft.com/v2.0/.well-known/openid-configuration";
         options.ClientId = "e99bf39d-2177-4950-9d40-2be7881c90dd"; // "YOUR_APP2_CLIENT_ID";
         options.ClientSecret = "BBN8Q~uvSZ2X5xHFSOSlKksv5EusR1LcolcJJbxe"; // "YOUR_APP2_CLIENT_SECRET";
         options.CallbackPath = "/signin-oidc-app2";
@@ -350,8 +350,8 @@ builder.Services
     })
     .AddOpenIdConnect("App3Scheme", options => {
         // App3 Configuration
-        options.Authority = "https://volvogroupextid.ciamlogin.com/volvogroupextid.onmicrosoft.com";
-        options.MetadataAddress = "https://volvogroupextid.ciamlogin.com/volvogroupextid.onmicrosoft.com/v2.0/.well-known/openid-configuration";
+        options.Authority = "https://volvogroupextiddev.ciamlogin.com/volvogroupextiddev.onmicrosoft.com";
+        options.MetadataAddress = "https://volvogroupextiddev.ciamlogin.com/volvogroupextiddev.onmicrosoft.com/v2.0/.well-known/openid-configuration";
         options.ClientId = "d1b2735a-29f9-4ab6-bb8b-fdd15550a767"; // "YOUR_APP3_CLIENT_ID";
         options.ClientSecret = "xpM8Q~Zv2v9aBoW5TlMvTL2d1iO3HhdoAF8h.crU"; // "YOUR_APP3_CLIENT_SECRET";
         options.CallbackPath = "/signin-oidc-app3";
