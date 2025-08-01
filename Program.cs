@@ -56,8 +56,8 @@ builder.Services
         // Manually configure options instead of using Bind
         options.Authority = "https://volvogroupextiddev.ciamlogin.com/volvogroupextiddev.onmicrosoft.com";
         options.MetadataAddress = "https://volvogroupextiddev.ciamlogin.com/volvogroupextiddev.onmicrosoft.com/v2.0/.well-known/openid-configuration";
-        options.ClientId = "4731edbb-bf60-41dd-ad4e-e912903a6f5f";// "YOUR_DEFAULT_APP_CLIENT_ID";
-        options.ClientSecret = "35c8Q~E0I5aDxogG_HDa8KZ30NDI6tTCtx352c6K";// "YOUR_DEFAULT_APP_CLIENT_SECRET";
+        options.ClientId = "6eebcf6d-8dfd-4284-bd0a-0d0751e736bf";// "YOUR_DEFAULT_APP_CLIENT_ID";
+        options.ClientSecret = "g8K8Q~yk3mlgSdWiAx3W53amtL1poBv6ENow4a7f";// "YOUR_DEFAULT_APP_CLIENT_SECRET";
         options.CallbackPath = "/signin-oidc";
         options.SignedOutCallbackPath = "/signout-callback-oidc";
 
@@ -166,8 +166,8 @@ builder.Services
         // App1 Configuration
         options.Authority = "https://volvogroupextiddev.ciamlogin.com/volvogroupextiddev.onmicrosoft.com";
         options.MetadataAddress = "https://volvogroupextiddev.ciamlogin.com/volvogroupextiddev.onmicrosoft.com/v2.0/.well-known/openid-configuration";
-        options.ClientId = "6bc083e2-7d23-4506-9197-9efdf15b1447"; // "YOUR_APP1_CLIENT_ID";
-        options.ClientSecret = "OWB8Q~JLA_lz3elfmJfDcbzZwatK4Ul.xKedAcla"; // "YOUR_APP1_CLIENT_SECRET";
+        options.ClientId = "6eebcf6d-8dfd-4284-bd0a-0d0751e736bf"; // "YOUR_APP1_CLIENT_ID";
+        options.ClientSecret = "g8K8Q~yk3mlgSdWiAx3W53amtL1poBv6ENow4a7f"; // "YOUR_APP1_CLIENT_SECRET";
         options.CallbackPath = "/signin-oidc-app1";
         options.SignedOutCallbackPath = "/signout-callback-oidc-app1";
         options.RequireHttpsMetadata = true;
@@ -254,8 +254,8 @@ builder.Services
         // App2 Configuration
         options.Authority = "https://volvogroupextiddev.ciamlogin.com/volvogroupextiddev.onmicrosoft.com";
         options.MetadataAddress = "https://volvogroupextiddev.ciamlogin.com/volvogroupextiddev.onmicrosoft.com/v2.0/.well-known/openid-configuration";
-        options.ClientId = "e99bf39d-2177-4950-9d40-2be7881c90dd"; // "YOUR_APP2_CLIENT_ID";
-        options.ClientSecret = "BBN8Q~uvSZ2X5xHFSOSlKksv5EusR1LcolcJJbxe"; // "YOUR_APP2_CLIENT_SECRET";
+        options.ClientId = "6d75af18-688a-400d-ba89-639e6a353785"; // "YOUR_APP2_CLIENT_ID";
+        options.ClientSecret = "LEA8Q~_hzbMwhYCUeYwWdHg9X10.BkEzHTLPtaqv"; // "YOUR_APP2_CLIENT_SECRET";
         options.CallbackPath = "/signin-oidc-app2";
         options.SignedOutCallbackPath = "/signout-callback-oidc-app2";
         options.RequireHttpsMetadata = true;
@@ -352,8 +352,8 @@ builder.Services
         // App3 Configuration
         options.Authority = "https://volvogroupextiddev.ciamlogin.com/volvogroupextiddev.onmicrosoft.com";
         options.MetadataAddress = "https://volvogroupextiddev.ciamlogin.com/volvogroupextiddev.onmicrosoft.com/v2.0/.well-known/openid-configuration";
-        options.ClientId = "d1b2735a-29f9-4ab6-bb8b-fdd15550a767"; // "YOUR_APP3_CLIENT_ID";
-        options.ClientSecret = "xpM8Q~Zv2v9aBoW5TlMvTL2d1iO3HhdoAF8h.crU"; // "YOUR_APP3_CLIENT_SECRET";
+        options.ClientId = "36e8550c-94a1-4e10-ae1e-b550ad1a319d"; // "YOUR_APP3_CLIENT_ID";
+        options.ClientSecret = "lM88Q~byqeSUWEBFo2-zvG~z432MokK5fNTMFce4s"; // "YOUR_APP3_CLIENT_SECRET";
         options.CallbackPath = "/signin-oidc-app3";
         options.SignedOutCallbackPath = "/signout-callback-oidc-app3";
         options.RequireHttpsMetadata = true;
