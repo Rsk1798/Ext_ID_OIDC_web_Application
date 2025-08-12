@@ -1,4 +1,5 @@
 ﻿using Ext_ID_OIDC_web_Application.Models;
+using Azure.Identity;
 using Microsoft.Graph;
 using Microsoft.Kiota.Abstractions;
 using Microsoft.Kiota.Abstractions.Authentication;
@@ -25,6 +26,10 @@ namespace Ext_ID_OIDC_web_Application.Services
         private readonly MultiAppConfig _multiAppConfig;
         private readonly ITokenAcquisition _tokenAcquisition;
 
+        private readonly string? _tenantId;
+        private readonly string? _clientId;
+        private readonly string? _clientSecret;
+
 
 
         public GraphApiService(IConfiguration configuration, ILogger<GraphApiService> logger, ITokenAcquisition tokenAcquisition)
@@ -45,6 +50,10 @@ namespace Ext_ID_OIDC_web_Application.Services
                 {
                     _logger.LogWarning("MultiAppConfig section not found in configuration");
                 }
+
+                _tenantId = _configuration["MultiAppConfig:GraphApiApp:TenantId"];
+                _clientId = _configuration["MultiAppConfig:GraphApiApp:ClientId"];
+                _clientSecret = _configuration["MultiAppConfig:GraphApiApp:ClientSecret"];
             }
             catch (Exception ex)
             {
@@ -57,6 +66,14 @@ namespace Ext_ID_OIDC_web_Application.Services
         {
             try
             {
+                // Prefer Azure.Identity ClientSecretCredential for robust app auth
+                if (!string.IsNullOrWhiteSpace(_tenantId) && !string.IsNullOrWhiteSpace(_clientId) && !string.IsNullOrWhiteSpace(_clientSecret))
+                {
+                    var credential = new ClientSecretCredential(_tenantId, _clientId, _clientSecret);
+                    return new GraphServiceClient(credential, new[] { "https://graph.microsoft.com/.default" });
+                }
+
+                // Fallback to legacy token acquisition if needed
                 var accessToken = await GetAccessTokenAsync();
                 var authProvider = new GraphApiAuthProvider(accessToken);
                 return new GraphServiceClient(authProvider);
@@ -75,7 +92,16 @@ namespace Ext_ID_OIDC_web_Application.Services
             {
                 _logger.LogInformation("Getting access token for Graph API operations using Graph API SPN");
 
-                // Use our custom token acquisition for application permissions
+                // If we have direct credentials, use ClientSecretCredential to request a token
+                if (!string.IsNullOrWhiteSpace(_tenantId) && !string.IsNullOrWhiteSpace(_clientId) && !string.IsNullOrWhiteSpace(_clientSecret))
+                {
+                    var credential = new ClientSecretCredential(_tenantId, _clientId, _clientSecret);
+                    var graphClient = new GraphServiceClient(credential, new[] { "https://graph.microsoft.com/.default" });
+                    // Create a trivial request to force token acquisition and extract it via handler is complex; instead, keep legacy for callers that need raw token
+                    // Prefer callers using GetGraphClientAsync.
+                }
+
+                // Fallback to custom acquisition abstraction
                 return await _tokenAcquisition.GetAccessTokenForAppAsync("https://graph.microsoft.com/.default");
             }
             catch (Exception ex)

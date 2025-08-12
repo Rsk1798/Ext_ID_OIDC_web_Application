@@ -8,6 +8,8 @@ using Microsoft.Graph.Models;
 using Microsoft.Kiota.Abstractions;
 using Microsoft.Kiota.Abstractions.Authentication;
 using OIDCDemoApp.Models;
+using Ext_ID_OIDC_web_Application.Services;
+using System.Security.Claims;
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -21,6 +23,7 @@ namespace Ext_ID_OIDC_web_Application.Controllers
         private readonly IConfiguration _configuration;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly ITokenAcquisition _tokenAcquisition;
+        private readonly IGraphApiService _graphApiService;
         private static readonly Dictionary<string, (int Count, DateTime LastAttempt)> _loginAttempts = new();
         private const int MaxLoginAttempts = 5;
         private const int LoginAttemptWindowMinutes = 15;
@@ -31,13 +34,22 @@ namespace Ext_ID_OIDC_web_Application.Controllers
         ILogger<HomeController> logger,
         IConfiguration configuration,
         IHttpClientFactory httpClientFactory,
-        ITokenAcquisition tokenAcquisition)
+        ITokenAcquisition tokenAcquisition,
+        IGraphApiService graphApiService)
         {
             _graphClient = graphClient;
             _logger = logger;
             _configuration = configuration;
             _httpClientFactory = httpClientFactory;
             _tokenAcquisition = tokenAcquisition;
+            _graphApiService = graphApiService;
+        }
+
+        private string? GetCurrentUserObjectId()
+        {
+            return User.FindFirstValue("oid")
+                ?? User.FindFirstValue("http://schemas.microsoft.com/identity/claims/objectidentifier")
+                ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
         }
 
 
@@ -684,12 +696,8 @@ namespace Ext_ID_OIDC_web_Application.Controllers
                     return Error("Failed to get current user information");
                 }
 
-                // Get the access token with the correct permissions
-                _logger.LogInformation("Requesting access token with scopes: User.ReadWrite.All");
-                var token = await _tokenAcquisition.GetAccessTokenForUserAsync(new[] {
-                "User.ReadWrite.All"  // Only need User.ReadWrite for these fields
-            });
-                _logger.LogInformation("Successfully obtained access token");
+                // Use Graph API app (application permissions) for write operations
+                var appGraphClient = await _graphApiService.GetGraphClientAsync();
 
                 // Create update user object matching Microsoft Graph API format exactly
                 var updateUser = new
@@ -716,53 +724,26 @@ namespace Ext_ID_OIDC_web_Application.Controllers
                     "application/json"
                 );
 
-                // Create a new HttpClient
-                using var httpClient = _httpClientFactory.CreateClient();
-
-                // Set the base address for Microsoft Graph
-                httpClient.BaseAddress = new Uri("https://graph.microsoft.com/v1.0/");
-
-                // Add the authorization header
-                httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-
-                // Add additional headers
-                httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-                // Make PATCH request to Graph API
-                var response = await httpClient.PatchAsync("me", content);
-
-                var responseContent = await response.Content.ReadAsStringAsync();
-
-                if (response.IsSuccessStatusCode)
+                try
                 {
-                    _logger.LogInformation("Successfully updated profile using direct Graph API call");
+                    await appGraphClient.Users[currentUser.Id].PatchAsync(new Microsoft.Graph.Models.User
+                    {
+                        DisplayName = model.Name,
+                        GivenName = model.GivenName,
+                        Surname = model.Surname,
+                        StreetAddress = model.StreetAddress,
+                        City = model.City,
+                        State = model.StateProvince,
+                        Country = model.CountryOrRegion
+                    });
 
-                    // Store success message in TempData
                     TempData["SuccessMessage"] = "Profile updated successfully!";
-
-                    // Redirect to Profile action
                     return RedirectToAction("Profile");
                 }
-                else
+                catch (ServiceException ex)
                 {
-                    _logger.LogError("Failed to update profile. Status: {StatusCode}, Content: {Content}",
-                        response.StatusCode, responseContent);
-
-                    var errorMessage = "Failed to update profile.";
-                    try
-                    {
-                        var error = System.Text.Json.JsonSerializer.Deserialize<GraphError>(responseContent);
-                        if (error?.Error != null)
-                        {
-                            errorMessage = $"Graph API Error: {error.Error.Message}";
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Error parsing Graph API error response: {Message}", ex.Message);
-                    }
-
-                    ModelState.AddModelError("", errorMessage);
+                    _logger.LogError(ex, "Failed to update profile via Graph SDK");
+                    ModelState.AddModelError("", ex.Message);
                     return View("EditProfile", model);
                 }
             }
@@ -810,12 +791,8 @@ namespace Ext_ID_OIDC_web_Application.Controllers
                     return RedirectToAction(nameof(Profile));
                 }
 
-                // Get the access token with application permissions using .default scope
-                var token = await _tokenAcquisition.GetAccessTokenForAppAsync("https://graph.microsoft.com/.default");
-
-                // Create a new GraphServiceClient with the application token
-                var authProvider = new SimpleAuthProvider(token);
-                var graphClient = new GraphServiceClient(authProvider);
+                // Use the application Graph client
+                var graphClient = await _graphApiService.GetGraphClientAsync();
 
                 try
                 {
@@ -1054,93 +1031,23 @@ namespace Ext_ID_OIDC_web_Application.Controllers
 
                 try
                 {
-                    // Get the access token with the correct permissions
-                    var token = await _tokenAcquisition.GetAccessTokenForUserAsync(new[] {
-                    "User.ReadWrite.All",
-                    "Directory.AccessAsUser.All"
-                });
-
-                    // Create HTTP client for direct Graph API call
-                    using var httpClient = _httpClientFactory.CreateClient();
-                    httpClient.BaseAddress = new Uri("https://graph.microsoft.com/v1.0/");
-                    httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-                    httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-                    // Create password change request
-                    var passwordChangeRequest = new
+                    // Use application permissions to perform admin-style reset
+                    var appGraphClient = await _graphApiService.GetGraphClientAsync();
+                    await appGraphClient.Users[user.Id].PatchAsync(new Microsoft.Graph.Models.User
                     {
-                        currentPassword = CurrentPassword,
-                        newPassword = NewPassword
-                    };
-
-                    var jsonContent = JsonSerializer.Serialize(passwordChangeRequest);
-                    var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
-
-                    // Make the password change request to the users endpoint
-                    var response = await httpClient.PostAsync($"users/{user.Id}/changePassword", content);
-                    var responseContent = await response.Content.ReadAsStringAsync();
-
-                    _logger.LogInformation($"Password reset response: {response.StatusCode}");
-                    _logger.LogInformation($"Response content: {responseContent}");
-
-                    if (response.IsSuccessStatusCode)
-                    {
-                        _logger.LogInformation("Password successfully changed for user {UserId}", user.Id);
-                        TempData["SuccessMessage"] = "Your password has been successfully changed. Please sign in with your new password.";
-
-                        // Sign out the user to force re-authentication with new password
-                        //await HttpContext.SignOutAsync(OpenIdConnectDefaults.AuthenticationScheme);
-                        //await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
-
-                        // Clear all authentication cookies
-                        //foreach (var cookie in HttpContext.Request.Cookies.Keys)
-                        //{
-                        //    HttpContext.Response.Cookies.Delete(cookie);
-                        //}
-
-                        //return RedirectToAction("Index", "Home");
-                        return RedirectToAction(nameof(Profile));
-                    }
-                    else
-                    {
-                        _logger.LogError("Failed to change password. Status: {StatusCode}, Content: {Content}",
-                            response.StatusCode, responseContent);
-
-                        string errorMessage = "Failed to change password.";
-                        try
+                        PasswordProfile = new Microsoft.Graph.Models.PasswordProfile
                         {
-                            var error = JsonSerializer.Deserialize<GraphError>(responseContent);
-                            if (error?.Error != null)
-                            {
-                                errorMessage = error.Error.Message;
-
-                                // Handle specific error cases
-                                if (error.Error.Code == "InvalidPassword")
-                                {
-                                    errorMessage = "The current password is incorrect.";
-                                }
-                                else if (error.Error.Code == "PasswordValidationFailed")
-                                {
-                                    errorMessage = "The new password does not meet the password requirements.";
-                                }
-                                else if (error.Error.Code == "Authorization_RequestDenied")
-                                {
-                                    errorMessage = "You don't have permission to change the password. Please contact your administrator.";
-                                }
-                            }
+                            Password = NewPassword,
+                            ForceChangePasswordNextSignIn = true
                         }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, "Error parsing Graph API error response");
-                        }
+                    });
 
-                        TempData["Error"] = errorMessage;
-                        return RedirectToAction(nameof(Profile));
-                    }
+                    TempData["SuccessMessage"] = "Password reset. Please sign in again with the new password.";
+                    return RedirectToAction(nameof(Profile));
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error changing password through Graph API");
+                    _logger.LogError(ex, "Error resetting password through Graph API App");
                     TempData["Error"] = "An unexpected error occurred while changing your password. Please try again.";
                     return RedirectToAction(nameof(Profile));
                 }
