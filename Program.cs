@@ -247,6 +247,15 @@ builder.Services
                     context.Response.Redirect("/Home/MfaRequired");
                 }
                 return Task.CompletedTask;
+            },
+            OnTokenValidated = context =>
+            {
+                var identity = context.Principal.Identity as ClaimsIdentity;
+                if (identity != null)
+                {
+                    identity.AddClaim(new Claim("auth_scheme", "App1Scheme"));
+                }
+                return Task.CompletedTask;
             }
         };
     })

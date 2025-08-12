@@ -126,9 +126,57 @@ namespace Ext_ID_OIDC_web_Application.Controllers
 
 
 
-        // Sign-in actions for different applications
+        // Helper to map scheme to friendly name
+        private string GetAppDisplayName(string authScheme)
+        {
+            return authScheme switch
+            {
+                "App1Scheme" => "Application 1 (Volvo Selected)",
+                "App2Scheme" => "Application 2 (Volvo Group - Default)",
+                "App3Scheme" => "Application 3 (Mack Truck)",
+                "DefaultScheme" => "Default Application",
+                _ => "Unknown Application"
+            };
+        }
+
+        // Session warning page
+        [Authorize]
+        public IActionResult SessionWarning(string requestedScheme, string returnUrl = null)
+        {
+            var currentScheme = User.Claims.FirstOrDefault(c => c.Type == "auth_scheme")?.Value;
+            if (string.IsNullOrEmpty(currentScheme) || string.IsNullOrEmpty(requestedScheme))
+            {
+                return RedirectToAction("Index");
+            }
+
+            var model = new SessionWarningModel
+            {
+                CurrentAuthScheme = currentScheme,
+                RequestedAuthScheme = requestedScheme,
+                UserName = User.Identity?.Name ?? "",
+                CurrentAppName = GetAppDisplayName(currentScheme),
+                RequestedAppName = GetAppDisplayName(requestedScheme),
+                WarningMessage = $"You are currently signed in to {GetAppDisplayName(currentScheme)}. To switch to {GetAppDisplayName(requestedScheme)}, please sign out first.",
+                SignOutUrl = Url.Action("SignOut", "Home") ?? "/Home/SignOut",
+                ContinueUrl = returnUrl ?? Url.Action("Index", "Home") ?? "/"
+            };
+
+            return View(model);
+        }
+
+        // Sign-in actions with single-session enforcement
         public IActionResult SignInApp1()
         {
+            if (User.Identity?.IsAuthenticated == true)
+            {
+                var currentScheme = User.Claims.FirstOrDefault(c => c.Type == "auth_scheme")?.Value;
+                if (!string.IsNullOrEmpty(currentScheme) && currentScheme != "App1Scheme")
+                {
+                    LogSecurityEvent("SessionConflict", $"User attempted to sign in to App1 while authenticated via {currentScheme}");
+                    return RedirectToAction("SessionWarning", new { requestedScheme = "App1Scheme" });
+                }
+            }
+
             LogSecurityEvent("SignInAttempt", "User attempting to sign in with App1");
             return Challenge(new AuthenticationProperties
             {
@@ -141,6 +189,16 @@ namespace Ext_ID_OIDC_web_Application.Controllers
 
         public IActionResult SignInApp2()
         {
+            if (User.Identity?.IsAuthenticated == true)
+            {
+                var currentScheme = User.Claims.FirstOrDefault(c => c.Type == "auth_scheme")?.Value;
+                if (!string.IsNullOrEmpty(currentScheme) && currentScheme != "App2Scheme")
+                {
+                    LogSecurityEvent("SessionConflict", $"User attempted to sign in to App2 while authenticated via {currentScheme}");
+                    return RedirectToAction("SessionWarning", new { requestedScheme = "App2Scheme" });
+                }
+            }
+
             LogSecurityEvent("SignInAttempt", "User attempting to sign in with App2");
             return Challenge(new AuthenticationProperties
             {
@@ -153,6 +211,16 @@ namespace Ext_ID_OIDC_web_Application.Controllers
 
         public IActionResult SignInApp3()
         {
+            if (User.Identity?.IsAuthenticated == true)
+            {
+                var currentScheme = User.Claims.FirstOrDefault(c => c.Type == "auth_scheme")?.Value;
+                if (!string.IsNullOrEmpty(currentScheme) && currentScheme != "App3Scheme")
+                {
+                    LogSecurityEvent("SessionConflict", $"User attempted to sign in to App3 while authenticated via {currentScheme}");
+                    return RedirectToAction("SessionWarning", new { requestedScheme = "App3Scheme" });
+                }
+            }
+
             LogSecurityEvent("SignInAttempt", "User attempting to sign in with App3");
             return Challenge(new AuthenticationProperties
             {
