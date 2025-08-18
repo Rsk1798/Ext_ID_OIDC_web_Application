@@ -1038,7 +1038,7 @@ namespace Ext_ID_OIDC_web_Application.Controllers
                         PasswordProfile = new Microsoft.Graph.Models.PasswordProfile
                         {
                             Password = NewPassword,
-                            ForceChangePasswordNextSignIn = true
+                            ForceChangePasswordNextSignIn = false
                         }
                     });
 
