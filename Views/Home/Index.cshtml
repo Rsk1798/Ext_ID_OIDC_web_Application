@@ -1,4 +1,4 @@
-﻿@using Microsoft.AspNetCore.Http
+﻿﻿@using Microsoft.AspNetCore.Http
 @inject IHttpContextAccessor HttpContextAccessor
 @{
     ViewData["Title"] = "Home Page";
@@ -76,7 +76,7 @@
                 }
 
                 // Get the authentication scheme used
-                var authScheme = User.Claims.FirstOrDefault(c => c.Type == "auth_scheme")?.Value ?? "Default";
+                var authScheme = User.Claims.FirstOrDefault(c => c.Type == "auth_scheme")?.Value ?? "Unknown";
             }
             <h3>Welcome @displayName !</h3>
             <p class="text-muted">Authenticated via: <strong>@authScheme</strong></p>

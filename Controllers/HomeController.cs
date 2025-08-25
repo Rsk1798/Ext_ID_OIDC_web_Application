@@ -13,12 +13,13 @@ using System.Security.Claims;
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Linq;
+using System.Net;
 
 namespace Ext_ID_OIDC_web_Application.Controllers
 {
     public class HomeController : Controller
     {
-        private readonly GraphServiceClient _graphClient;
         private readonly ILogger<HomeController> _logger;
         private readonly IConfiguration _configuration;
         private readonly IHttpClientFactory _httpClientFactory;
@@ -30,14 +31,13 @@ namespace Ext_ID_OIDC_web_Application.Controllers
 
 
 
-        public HomeController(GraphServiceClient graphClient,
+        public HomeController(
         ILogger<HomeController> logger,
         IConfiguration configuration,
         IHttpClientFactory httpClientFactory,
         ITokenAcquisition tokenAcquisition,
         IGraphApiService graphApiService)
         {
-            _graphClient = graphClient;
             _logger = logger;
             _configuration = configuration;
             _httpClientFactory = httpClientFactory;
@@ -146,7 +146,6 @@ namespace Ext_ID_OIDC_web_Application.Controllers
                 "App1Scheme" => "Application 1 (Volvo Selected)",
                 "App2Scheme" => "Application 2 (Volvo Group - Default)",
                 "App3Scheme" => "Application 3 (Mack Truck)",
-                "DefaultScheme" => "Default Application",
                 _ => "Unknown Application"
             };
         }
@@ -242,17 +241,6 @@ namespace Ext_ID_OIDC_web_Application.Controllers
         }
 
 
-        public IActionResult SignInDefault()
-        {
-            LogSecurityEvent("SignInAttempt", "User attempting to sign in with Default App");
-            return Challenge(new AuthenticationProperties
-            {
-                RedirectUri = Url.Action("Index", "Home"),
-                Items = { { "scheme", "DefaultScheme" } }
-            }, "DefaultScheme");
-        }
-
-
 
         [Authorize]
         public async Task<IActionResult> Profile()
@@ -260,8 +248,11 @@ namespace Ext_ID_OIDC_web_Application.Controllers
             AddSecurityHeaders();
             try
             {
+                // Use delegated GraphApiService for /me requests (user context)
+                var graphClient = await _graphApiService.GetDelegatedGraphClientAsync();
+                
                 // Get user profile from Graph API with additional fields
-                var user = await _graphClient.Me.GetAsync(requestConfiguration => {
+                var user = await graphClient.Me.GetAsync(requestConfiguration => {
                     requestConfiguration.QueryParameters.Select = new[] {
                     "id",
                     "displayName",
@@ -330,8 +321,11 @@ namespace Ext_ID_OIDC_web_Application.Controllers
         {
             try
             {
+                // Use delegated GraphApiService for /me requests
+                var graphClient = await _graphApiService.GetDelegatedGraphClientAsync();
+                
                 // Try to get user profile from Graph API
-                var user = await _graphClient.Me.GetAsync();
+                var user = await graphClient.Me.GetAsync();
 
                 if (user == null)
                 {
@@ -444,8 +438,11 @@ namespace Ext_ID_OIDC_web_Application.Controllers
                 {
                     try
                     {
+                        // Use delegated GraphApiService for /me requests
+                        var graphClient = await _graphApiService.GetDelegatedGraphClientAsync();
+                        
                         // Test Graph API connection
-                        var user = await _graphClient.Me.GetAsync();
+                        var user = await graphClient.Me.GetAsync();
                         diagnosticInfo.GraphApiStatus = "Connected successfully";
                         diagnosticInfo.UserInfo = new UserInfo
                         {
@@ -484,16 +481,20 @@ namespace Ext_ID_OIDC_web_Application.Controllers
         {
             try
             {
+                // Use delegated permissions for /me requests
+                var delegatedGraphClient = await _graphApiService.GetDelegatedGraphClientAsync();
+                
                 // Get the current user's account
-                var user = await _graphClient.Me.GetAsync();
+                var user = await delegatedGraphClient.Me.GetAsync();
                 if (user != null)
                 {
                     _logger.LogInformation("User {DisplayName} signing out", user.DisplayName);
 
                     try
                     {
-                        // Revoke all refresh tokens for the user
-                        await _graphClient.Users[user.Id].RevokeSignInSessions.PostAsync();
+                        // Use application permissions for revoke sessions operation
+                        var appGraphClient = await _graphApiService.GetApplicationGraphClientAsync();
+                        await appGraphClient.Users[user.Id].RevokeSignInSessions.PostAsync();
                         _logger.LogInformation("Successfully revoked sign-in sessions for user {DisplayName}", user.DisplayName);
                     }
                     catch (Exception ex)
@@ -555,7 +556,6 @@ namespace Ext_ID_OIDC_web_Application.Controllers
 
                 // Sign out from all authentication schemes
                 await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme, authProperties);
-                await HttpContext.SignOutAsync("DefaultScheme", authProperties);
                 await HttpContext.SignOutAsync("App1Scheme", authProperties);
                 await HttpContext.SignOutAsync("App2Scheme", authProperties);
                 await HttpContext.SignOutAsync("App3Scheme", authProperties);
@@ -570,7 +570,6 @@ namespace Ext_ID_OIDC_web_Application.Controllers
                 try
                 {
                     await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
-                    await HttpContext.SignOutAsync("DefaultScheme");
                     await HttpContext.SignOutAsync("App1Scheme");
                     await HttpContext.SignOutAsync("App2Scheme");
                     await HttpContext.SignOutAsync("App3Scheme");
@@ -591,8 +590,11 @@ namespace Ext_ID_OIDC_web_Application.Controllers
         {
             try
             {
+                // Use delegated GraphApiService for /me requests (user context)
+                var graphClient = await _graphApiService.GetDelegatedGraphClientAsync();
+                
                 // Get real-time user data from Graph API with specific fields
-                var user = await _graphClient.Me.GetAsync(requestConfiguration => {
+                var user = await graphClient.Me.GetAsync(requestConfiguration => {
                     requestConfiguration.QueryParameters.Select = new[] {
                     "id",
                     "displayName",
@@ -687,17 +689,18 @@ namespace Ext_ID_OIDC_web_Application.Controllers
                     return View("EditProfile", model);
                 }
 
-                // Get the current user's ID and verify permissions
+                // Get the current user's ID using delegated permissions
                 _logger.LogInformation("Fetching current user from Graph API");
-                var currentUser = await _graphClient.Me.GetAsync();
+                var delegatedGraphClient = await _graphApiService.GetDelegatedGraphClientAsync();
+                var currentUser = await delegatedGraphClient.Me.GetAsync();
                 if (currentUser == null)
                 {
                     _logger.LogError("Failed to get current user from Graph API");
                     return Error("Failed to get current user information");
                 }
 
-                // Use Graph API app (application permissions) for write operations
-                var appGraphClient = await _graphApiService.GetGraphClientAsync();
+                // Use application permissions for write operations
+                var appGraphClient = await _graphApiService.GetApplicationGraphClientAsync();
 
                 // Create update user object matching Microsoft Graph API format exactly
                 var updateUser = new
@@ -782,8 +785,11 @@ namespace Ext_ID_OIDC_web_Application.Controllers
         {
             try
             {
+                // Use delegated permissions to get current user info
+                var delegatedGraphClient = await _graphApiService.GetDelegatedGraphClientAsync();
+                
                 // Get current user info
-                var user = await _graphClient.Me.GetAsync();
+                var user = await delegatedGraphClient.Me.GetAsync();
                 if (user == null)
                 {
                     _logger.LogError("Failed to get current user information");
@@ -791,19 +797,18 @@ namespace Ext_ID_OIDC_web_Application.Controllers
                     return RedirectToAction(nameof(Profile));
                 }
 
-                // Use the application Graph client
-                var graphClient = await _graphApiService.GetGraphClientAsync();
+                // Use application permissions for delete operation
+                var appGraphClient = await _graphApiService.GetApplicationGraphClientAsync();
 
                 try
                 {
                     // Delete the user using the Graph SDK with application permissions
-                    await graphClient.Users[user.Id].DeleteAsync();
+                    await appGraphClient.Users[user.Id].DeleteAsync();
 
                     _logger.LogInformation("User {UserId} was successfully deleted", user.Id);
 
                     // Sign out the user after deletion
                     await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
-                    await HttpContext.SignOutAsync("DefaultScheme");
                     await HttpContext.SignOutAsync("App1Scheme");
                     await HttpContext.SignOutAsync("App2Scheme");
                     await HttpContext.SignOutAsync("App3Scheme");
@@ -834,31 +839,6 @@ namespace Ext_ID_OIDC_web_Application.Controllers
                 _logger.LogError(ex, "Error deleting user profile");
                 TempData["Error"] = "An unexpected error occurred. Please try again later.";
                 return RedirectToAction(nameof(Profile));
-            }
-        }
-
-
-
-        private async Task<GraphServiceClient> GetGraphClient()
-        {
-            try
-            {
-                // Get the access token
-                string accessToken = await _tokenAcquisition.GetAccessTokenForUserAsync(
-                    new[] {
-                    "User.Read",
-                    "User.ReadWrite.All",
-                    "User.ReadBasic.All"
-                    });
-
-                // Create a new GraphServiceClient with the token
-                var authProvider = new SimpleAuthProvider(accessToken);
-                return new GraphServiceClient(authProvider);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error getting Graph client");
-                throw;
             }
         }
 
@@ -914,7 +894,8 @@ namespace Ext_ID_OIDC_web_Application.Controllers
         {
             try
             {
-                var graphClient = await GetGraphClient();
+                // Use delegated permissions for /me request
+                var graphClient = await _graphApiService.GetDelegatedGraphClientAsync();
                 var user = await graphClient.Me.GetAsync();
 
                 // Get authentication methods
@@ -1020,8 +1001,9 @@ namespace Ext_ID_OIDC_web_Application.Controllers
                     return RedirectToAction(nameof(Profile));
                 }
 
-                // Get the current user
-                var user = await _graphClient.Me.GetAsync();
+                // Get the current user using delegated permissions
+                var delegatedGraphClient = await _graphApiService.GetDelegatedGraphClientAsync();
+                var user = await delegatedGraphClient.Me.GetAsync();
                 if (user == null)
                 {
                     _logger.LogError("Failed to get current user information");
@@ -1032,7 +1014,7 @@ namespace Ext_ID_OIDC_web_Application.Controllers
                 try
                 {
                     // Use application permissions to perform admin-style reset
-                    var appGraphClient = await _graphApiService.GetGraphClientAsync();
+                    var appGraphClient = await _graphApiService.GetApplicationGraphClientAsync();
                     await appGraphClient.Users[user.Id].PatchAsync(new Microsoft.Graph.Models.User
                     {
                         PasswordProfile = new Microsoft.Graph.Models.PasswordProfile
@@ -1104,7 +1086,7 @@ namespace Ext_ID_OIDC_web_Application.Controllers
                         "App1Scheme" => "Application 1",
                         "App2Scheme" => "Application 2",
                         "App3Scheme" => "Application 3",
-                        _ => "Default Application"
+                        _ => "Unknown Application"
                     };
 
                     // Get client ID based on the scheme
@@ -1113,13 +1095,14 @@ namespace Ext_ID_OIDC_web_Application.Controllers
                         "App1Scheme" => _configuration["MultiAppConfig:App1:ClientId"],
                         "App2Scheme" => _configuration["MultiAppConfig:App2:ClientId"],
                         "App3Scheme" => _configuration["MultiAppConfig:App3:ClientId"],
-                        _ => _configuration["MultiAppConfig:GraphApiApp:ClientId"]
+                        _ => "Unknown"
                     };
 
                     // Test Graph API connection
                     try
                     {
-                        var user = await _graphClient.Me.GetAsync();
+                        var graphClient = await _graphApiService.GetDelegatedGraphClientAsync();
+                        var user = await graphClient.Me.GetAsync();
                         viewModel.GraphApiInfo = new GraphApiInfo
                         {
                             DisplayName = user.DisplayName,
@@ -1166,7 +1149,7 @@ namespace Ext_ID_OIDC_web_Application.Controllers
                     UserDisplayName = User.Claims.FirstOrDefault(c => c.Type == "name")?.Value,
 
                     // Application Context (shows which app was used)
-                    AuthenticationScheme = User.Claims.FirstOrDefault(c => c.Type == "auth_scheme")?.Value ?? "Default",
+                    AuthenticationScheme = User.Claims.FirstOrDefault(c => c.Type == "auth_scheme")?.Value ?? "Unknown",
                     ClientId = User.Claims.FirstOrDefault(c => c.Type == "aud")?.Value,
 
                     // Graph API Recognition
@@ -1187,7 +1170,8 @@ namespace Ext_ID_OIDC_web_Application.Controllers
         {
             try
             {
-                var user = await _graphClient.Me.GetAsync();
+                var graphClient = await _graphApiService.GetDelegatedGraphClientAsync();
+                var user = await graphClient.Me.GetAsync();
                 return new
                 {
                     DisplayName = user.DisplayName,

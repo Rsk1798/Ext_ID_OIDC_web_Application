@@ -1,4 +1,4 @@
-﻿using Ext_ID_OIDC_web_Application.Models;
+﻿﻿﻿﻿﻿﻿using Ext_ID_OIDC_web_Application.Models;
 using Azure.Identity;
 using Microsoft.Graph;
 using Microsoft.Kiota.Abstractions;
@@ -11,6 +11,8 @@ namespace Ext_ID_OIDC_web_Application.Services
     public interface IGraphApiService
     {
         Task<GraphServiceClient> GetGraphClientAsync();
+        Task<GraphServiceClient> GetDelegatedGraphClientAsync();
+        Task<GraphServiceClient> GetApplicationGraphClientAsync();
         Task<string> GetAccessTokenAsync();
     }
 
@@ -25,6 +27,7 @@ namespace Ext_ID_OIDC_web_Application.Services
         private readonly ILogger<GraphApiService> _logger;
         private readonly MultiAppConfig _multiAppConfig;
         private readonly ITokenAcquisition _tokenAcquisition;
+        private readonly IHttpContextAccessor _httpContextAccessor;
 
         private readonly string? _tenantId;
         private readonly string? _clientId;
@@ -32,11 +35,12 @@ namespace Ext_ID_OIDC_web_Application.Services
 
 
 
-        public GraphApiService(IConfiguration configuration, ILogger<GraphApiService> logger, ITokenAcquisition tokenAcquisition)
+        public GraphApiService(IConfiguration configuration, ILogger<GraphApiService> logger, ITokenAcquisition tokenAcquisition, IHttpContextAccessor httpContextAccessor)
         {
             _configuration = configuration;
             _logger = logger;
             _tokenAcquisition = tokenAcquisition;
+            _httpContextAccessor = httpContextAccessor;
             _multiAppConfig = new MultiAppConfig();
 
             try
@@ -64,23 +68,75 @@ namespace Ext_ID_OIDC_web_Application.Services
 
         public async Task<GraphServiceClient> GetGraphClientAsync()
         {
+            // Default to delegated client for /me and user context operations
+            return await GetDelegatedGraphClientAsync();
+        }
+
+        public async Task<GraphServiceClient> GetDelegatedGraphClientAsync()
+        {
             try
             {
-                // Prefer Azure.Identity ClientSecretCredential for robust app auth
+                _logger.LogInformation("Creating delegated Graph client for user context operations");
+                
+                // Use delegated permissions with user token for /me requests
+                var accessToken = await _tokenAcquisition.GetAccessTokenForUserAsync(new[] {
+                    "User.Read",
+                    "User.ReadWrite.All"
+                });
+                
+                var authProvider = new GraphApiAuthProvider(accessToken);
+                return new GraphServiceClient(authProvider);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error creating delegated Graph client");
+                throw;
+            }
+        }
+
+        public async Task<GraphServiceClient> GetApplicationGraphClientAsync()
+        {
+            try
+            {
+                _logger.LogInformation("Creating application Graph client for administrative operations");
+                _logger.LogInformation("Using TenantId: {TenantId}, ClientId: {ClientId}", _tenantId, _clientId);
+                
+                // Use application permissions for administrative operations
                 if (!string.IsNullOrWhiteSpace(_tenantId) && !string.IsNullOrWhiteSpace(_clientId) && !string.IsNullOrWhiteSpace(_clientSecret))
                 {
                     var credential = new ClientSecretCredential(_tenantId, _clientId, _clientSecret);
-                    return new GraphServiceClient(credential, new[] { "https://graph.microsoft.com/.default" });
+                    var graphClient = new GraphServiceClient(credential, new[] { "https://graph.microsoft.com/.default" });
+                    
+                    // Test the connection and log token info
+                    try
+                    {
+                        _logger.LogInformation("Testing Graph client connection with application permissions");
+                        // Make a simple test call to validate permissions
+                        var testRequest = graphClient.Users.GetAsync(requestConfiguration => {
+                            requestConfiguration.QueryParameters.Top = 1;
+                            requestConfiguration.QueryParameters.Select = new[] { "id", "displayName" };
+                        });
+                        
+                        _logger.LogInformation("Successfully created and validated application Graph client");
+                    }
+                    catch (Exception testEx)
+                    {
+                        _logger.LogWarning(testEx, "Failed to validate Graph client connection: {Message}", testEx.Message);
+                    }
+                    
+                    return graphClient;
                 }
 
                 // Fallback to legacy token acquisition if needed
+                _logger.LogWarning("Missing configuration for ClientSecretCredential, falling back to token acquisition");
                 var accessToken = await GetAccessTokenAsync();
                 var authProvider = new GraphApiAuthProvider(accessToken);
                 return new GraphServiceClient(authProvider);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating Graph client");
+                _logger.LogError(ex, "Error creating application Graph client: {Message}. TenantId: {TenantId}, ClientId: {ClientId}", 
+                    ex.Message, _tenantId, _clientId);
                 throw;
             }
         }

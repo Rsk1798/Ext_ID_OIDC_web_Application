@@ -52,116 +52,7 @@ builder.Services
         options.ExpireTimeSpan = TimeSpan.FromHours(1);
         options.SlidingExpiration = true;
     })
-    .AddOpenIdConnect("DefaultScheme", options => {
-        // Manually configure options instead of using Bind
-        options.Authority = "https://volvogroupextiddev.ciamlogin.com/volvogroupextiddev.onmicrosoft.com";
-        options.MetadataAddress = "https://volvogroupextiddev.ciamlogin.com/volvogroupextiddev.onmicrosoft.com/v2.0/.well-known/openid-configuration";
-        options.ClientId = "6eebcf6d-8dfd-4284-bd0a-0d0751e736bf";// "YOUR_DEFAULT_APP_CLIENT_ID";
-        options.ClientSecret = "g8K8Q~yk3mlgSdWiAx3W53amtL1poBv6ENow4a7f";// "YOUR_DEFAULT_APP_CLIENT_SECRET";
-        options.CallbackPath = "/signin-oidc";
-        options.SignedOutCallbackPath = "/signout-callback-oidc";
 
-        // Configure HTTPS requirement
-        options.RequireHttpsMetadata = true;
-
-        // Configure sign-out for CIAM
-        options.UseTokenLifetime = false;
-        options.SaveTokens = true;
-
-        // Configure CIAM-specific options
-        options.ResponseType = "code";
-        options.ResponseMode = "form_post";
-        options.UsePkce = true;
-
-        // Configure cookie options
-        options.NonceCookie.SecurePolicy = CookieSecurePolicy.Always;
-        options.CorrelationCookie.SecurePolicy = CookieSecurePolicy.Always;
-
-        // Configure prompt behavior for password reset
-        options.Prompt = "select_account";
-
-        // Add required scopes
-        options.Scope.Clear();
-        options.Scope.Add("openid");
-        options.Scope.Add("offline_access");
-        options.Scope.Add("profile");
-        options.Scope.Add("email");
-        options.Scope.Add("User.Read");
-        options.Scope.Add("User.ReadWrite.All");
-        options.Scope.Add("Directory.AccessAsUser.All");
-
-        options.Events = new OpenIdConnectEvents
-        {
-            OnRedirectToIdentityProvider = context =>
-            {
-                context.ProtocolMessage.Prompt = "login";
-                context.ProtocolMessage.RedirectUri = $"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}/signin-oidc";
-                return Task.CompletedTask;
-            },
-            OnRedirectToIdentityProviderForSignOut = context =>
-            {
-                context.ProtocolMessage.PostLogoutRedirectUri = $"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}/signout-callback-oidc";
-                context.ProtocolMessage.State = Guid.NewGuid().ToString();
-                return Task.CompletedTask;
-            },
-            OnSignedOutCallbackRedirect = async context =>
-            {
-                context.HttpContext.Session.Clear();
-                await context.HttpContext.Session.LoadAsync();
-
-                var cookieOptions = new CookieOptions
-                {
-                    HttpOnly = true,
-                    Secure = true,
-                    SameSite = SameSiteMode.Lax,
-                    Expires = DateTime.UtcNow.AddYears(-1)
-                };
-
-                var cookiesToClear = new[] {
-                    ".AspNetCore.Cookies",
-                    ".AspNetCore.OpenIdConnect.Nonce",
-                    ".AspNetCore.OpenIdConnect.Correlation",
-                    "OIDCDemoApp.Session",
-                    "msal.client.info",
-                    "msal.error",
-                    "msal.error.description",
-                    "msal.session.state",
-                    "msal.nonce.idtoken"
-                };
-
-                foreach (var cookie in cookiesToClear)
-                {
-                    context.HttpContext.Response.Cookies.Delete(cookie, cookieOptions);
-                }
-
-                context.HttpContext.Response.Headers["Cache-Control"] = "no-cache, no-store, must-revalidate, private, max-age=0";
-                context.HttpContext.Response.Headers["Pragma"] = "no-cache";
-                context.HttpContext.Response.Headers["Expires"] = "-1";
-
-                context.Response.Redirect("/");
-                context.HandleResponse();
-            },
-            OnAuthenticationFailed = context =>
-            {
-                if (context.Exception.Message.Contains("MFA"))
-                {
-                    context.HandleResponse();
-                    context.Response.Redirect("/Home/MfaRequired");
-                }
-                return Task.CompletedTask;
-            },
-            OnTokenValidated = context =>
-            {
-                // Add authentication scheme to claims for user differentiation
-                var identity = context.Principal.Identity as ClaimsIdentity;
-                if (identity != null)
-                {
-                    identity.AddClaim(new Claim("auth_scheme", "DefaultScheme"));
-                }
-                return Task.CompletedTask;
-            }
-        };
-    })
     .AddOpenIdConnect("App1Scheme", options => {
         // App1 Configuration
         options.Authority = "https://volvogroupextiddev.ciamlogin.com/volvogroupextiddev.onmicrosoft.com";
@@ -475,21 +366,6 @@ builder.Services.Configure<CookiePolicyOptions>(options =>
 
 
 
-// Add Graph API client with custom configuration
-builder.Services.AddScoped(sp =>
-{
-    var tokenAcquisition = sp.GetRequiredService<ITokenAcquisition>();
-    var authProvider = new SimpleAuthProvider(tokenAcquisition);
-    var graphClient = new GraphServiceClient(authProvider, "https://graph.microsoft.com/v1.0");
-
-    // Configure the client
-    graphClient.RequestAdapter.BaseUrl = "https://graph.microsoft.com/v1.0";
-
-    return graphClient;
-});
-
-
-
 // Add Graph API service
 // builder.Services.AddScoped<OIDCDemoApp.Services.Services.IGraphApiService, OIDCDemoApp.Services.GraphApiService>();
 builder.Services.AddScoped<Ext_ID_OIDC_web_Application.Services.IGraphApiService, Ext_ID_OIDC_web_Application.Services.GraphApiService>();
@@ -589,11 +465,6 @@ public class CustomTokenAcquisition : ITokenAcquisition
             }
             if (string.IsNullOrEmpty(accessToken))
             {
-                // Try DefaultScheme
-                accessToken = await httpContext.GetTokenAsync("DefaultScheme", "access_token");
-            }
-            if (string.IsNullOrEmpty(accessToken))
-            {
                 // Try App1Scheme
                 accessToken = await httpContext.GetTokenAsync("App1Scheme", "access_token");
             }
@@ -645,11 +516,6 @@ public class CustomTokenAcquisition : ITokenAcquisition
             }
             if (string.IsNullOrEmpty(accessToken))
             {
-                // Try DefaultScheme
-                accessToken = await httpContext.GetTokenAsync("DefaultScheme", "access_token");
-            }
-            if (string.IsNullOrEmpty(accessToken))
-            {
                 // Try App1Scheme
                 accessToken = await httpContext.GetTokenAsync("App1Scheme", "access_token");
             }
@@ -680,38 +546,3 @@ public class CustomTokenAcquisition : ITokenAcquisition
     }
 }
 
-
-
-// Simple authentication provider for Graph API
-public class SimpleAuthProvider : IAuthenticationProvider
-{
-    private readonly ITokenAcquisition _tokenAcquisition;
-
-    public SimpleAuthProvider(ITokenAcquisition tokenAcquisition)
-    {
-        _tokenAcquisition = tokenAcquisition;
-    }
-
-    public async Task AuthenticateRequestAsync(RequestInformation request, Dictionary<string, object>? additionalAuthenticationContext = null, CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            // Get the access token for Graph API operations with all required permissions
-            var token = await _tokenAcquisition.GetAccessTokenForUserAsync(new[] {
-                "User.Read",
-                "User.ReadWrite.All",
-                "User.ReadBasic.All",
-                "Directory.AccessAsUser.All",
-                "AuthenticationMethod.Read.All",
-                "User.RevokeSessions.All"
-            });
-
-            request.Headers.Add("Authorization", $"Bearer {token}");
-            request.Headers.Add("Content-Type", "application/json");
-        }
-        catch (Exception ex)
-        {
-            throw new Exception("Failed to get access token", ex);
-        }
-    }
-}
