@@ -1,4 +1,4 @@
-﻿﻿@using Microsoft.AspNetCore.Http
+﻿﻿﻿@using Microsoft.AspNetCore.Http
 @inject IHttpContextAccessor HttpContextAccessor
 @{
     ViewData["Title"] = "Home Page";
@@ -7,6 +7,22 @@
 <div class="text-center">
     <h1 class="display-4 volvo-font"><strong>Welcome</strong></h1>
     <h2 class="display-4 volvo-font"><strong>Volvo Group</strong></h2>
+
+    @if (TempData["SuccessMessage"] != null)
+    {
+        <div class="alert alert-success alert-dismissible fade show" role="alert">
+            @TempData["SuccessMessage"]
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close">X</button>
+        </div>
+    }
+
+    @if (TempData["Error"] != null)
+    {
+        <div class="alert alert-danger alert-dismissible fade show" role="alert">
+            @TempData["Error"]
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close">X</button>
+        </div>
+    }
 
     @if (!User.Identity.IsAuthenticated)
     {

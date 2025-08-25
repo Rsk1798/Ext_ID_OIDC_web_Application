@@ -128,20 +128,12 @@
                 @Html.AntiForgeryToken()
                 <div class="modal-body">
                     <div class="alert alert-info">
-                        <i class="fas fa-info-circle"></i> Please enter your current password and then your new password.
+                        <i class="fas fa-info-circle"></i> Please enter your new password. Your current session will remain active.
                     </div>
 
                     <div class="mb-3">
-                        <label for="CurrentPassword" class="form-label">Current Password</label>
-                        <input type="password" class="form-control" id="CurrentPassword" name="CurrentPassword" required>
-                        <div class="invalid-feedback" id="currentPasswordFeedback">
-                            Please enter your current password.
-                        </div>
-                    </div>
-
-                    <div class="mb-3">
-                        <label for="NewPassword" class="form-label">New Password</label>
-                        <input type="password" class="form-control" id="NewPassword" name="NewPassword" required>
+                        <label for="newPassword" class="form-label">New Password</label>
+                        <input type="password" class="form-control" id="newPassword" name="newPassword" required>
                         <div class="form-text">
                             Password must be at least 8 characters long and contain:
                             <ul>
@@ -157,8 +149,8 @@
                     </div>
 
                     <div class="mb-3">
-                        <label for="ConfirmPassword" class="form-label">Confirm New Password</label>
-                        <input type="password" class="form-control" id="ConfirmPassword" name="ConfirmPassword" required>
+                        <label for="confirmPassword" class="form-label">Confirm New Password</label>
+                        <input type="password" class="form-control" id="confirmPassword" name="confirmPassword" required>
                         <div class="invalid-feedback" id="confirmPasswordFeedback">
                             Passwords do not match.
                         </div>
@@ -236,28 +228,24 @@
     <script>
         document.addEventListener('DOMContentLoaded', function() {
             const form = document.getElementById('resetPasswordForm');
-            const currentPasswordInput = document.getElementById('CurrentPassword');
-            const newPasswordInput = document.getElementById('NewPassword');
-            const confirmPasswordInput = document.getElementById('ConfirmPassword');
+            const newPasswordInput = document.getElementById('newPassword');
+            const confirmPasswordInput = document.getElementById('confirmPassword');
             const resetButton = document.getElementById('resetPasswordButton');
             const modal = document.getElementById('resetPasswordModal');
 
             function validateForm() {
-                const isCurrentPasswordValid = currentPasswordInput.value.length > 0;
                 const isNewPasswordValid = validatePassword(newPasswordInput.value);
-                const isConfirmPasswordValid = newPasswordInput.value === confirmPasswordInput.value;
+                const isConfirmPasswordValid = newPasswordInput.value === confirmPasswordInput.value && confirmPasswordInput.value.length > 0;
 
-                currentPasswordInput.classList.toggle('is-invalid', !isCurrentPasswordValid);
                 newPasswordInput.classList.toggle('is-invalid', !isNewPasswordValid);
                 confirmPasswordInput.classList.toggle('is-invalid', !isConfirmPasswordValid);
 
-                resetButton.disabled = !(isCurrentPasswordValid && isNewPasswordValid && isConfirmPasswordValid);
+                resetButton.disabled = !(isNewPasswordValid && isConfirmPasswordValid);
 
-                return isCurrentPasswordValid && isNewPasswordValid && isConfirmPasswordValid;
+                return isNewPasswordValid && isConfirmPasswordValid;
             }
 
             // Add input event listeners
-            currentPasswordInput.addEventListener('input', validateForm);
             newPasswordInput.addEventListener('input', validateForm);
             confirmPasswordInput.addEventListener('input', validateForm);
 
@@ -273,7 +261,6 @@
             // Clear form when modal is closed
             modal.addEventListener('hidden.bs.modal', function () {
                 form.reset();
-                currentPasswordInput.classList.remove('is-invalid');
                 newPasswordInput.classList.remove('is-invalid');
                 confirmPasswordInput.classList.remove('is-invalid');
                 resetButton.disabled = true;

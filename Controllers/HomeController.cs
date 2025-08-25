@@ -15,6 +15,8 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Linq;
 using System.Net;
+using System.Text.Json.Serialization;
+using System.IdentityModel.Tokens.Jwt;
 
 namespace Ext_ID_OIDC_web_Application.Controllers
 {
@@ -50,6 +52,28 @@ namespace Ext_ID_OIDC_web_Application.Controllers
             return User.FindFirstValue("oid")
                 ?? User.FindFirstValue("http://schemas.microsoft.com/identity/claims/objectidentifier")
                 ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
+        }
+
+        /// <summary>
+        /// Helper method to safely extract string values from JsonElement
+        /// </summary>
+        /// <param name="element">The JsonElement to extract from</param>
+        /// <param name="propertyName">The property name to extract</param>
+        /// <returns>String value or null if property doesn't exist or is null</returns>
+        private string? GetJsonStringValue(JsonElement element, string propertyName)
+        {
+            try
+            {
+                if (element.TryGetProperty(propertyName, out var property))
+                {
+                    return property.ValueKind == JsonValueKind.String ? property.GetString() : null;
+                }
+                return null;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
 
@@ -248,44 +272,160 @@ namespace Ext_ID_OIDC_web_Application.Controllers
             AddSecurityHeaders();
             try
             {
-                // Use delegated GraphApiService for /me requests (user context)
-                var graphClient = await _graphApiService.GetDelegatedGraphClientAsync();
-                
-                // Get user profile from Graph API with additional fields
-                var user = await graphClient.Me.GetAsync(requestConfiguration => {
-                    requestConfiguration.QueryParameters.Select = new[] {
-                    "id",
-                    "displayName",
-                    "givenName",
-                    "surname",
-                    "mail",
-                    "userPrincipalName",
-                    "streetAddress",
-                    "city",
-                    "state",
-                    "country",
-                    "postalCode"
-                };
-                });
-
-                if (user == null)
+                // Log all available claims for debugging
+                _logger.LogInformation("Available claims for user:");
+                foreach (var claim in User.Claims)
                 {
-                    _logger.LogWarning("Graph API returned null user profile");
-                    return RedirectToAction("ProfileError", new { message = "Failed to retrieve user profile from Graph API" });
+                    _logger.LogInformation("Claim Type: {Type}, Value: {Value}", claim.Type, claim.Value);
                 }
 
-                // Create user profile from Graph API data
+                // Try multiple possible email claim types
+                var userEmail = User.Claims.FirstOrDefault(c => 
+                    c.Type == "email" || 
+                    c.Type == "preferred_username" || 
+                    c.Type == "emails" ||
+                    c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress" ||
+                    c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn" ||
+                    c.Type == "upn" ||
+                    c.Type == ClaimTypes.Email ||
+                    c.Type == ClaimTypes.Upn
+                )?.Value;
+
+                _logger.LogInformation("Initial userEmail from claims: {UserEmail}", userEmail);
+
+                // Check if this is a GUID-based email (common with App3)
+                bool isGuidEmail = false;
+                if (!string.IsNullOrEmpty(userEmail) && userEmail.Contains("@"))
+                {
+                    var emailPart = userEmail.Split('@')[0];
+                    isGuidEmail = Guid.TryParse(emailPart, out _);
+                    _logger.LogInformation("Email appears to be GUID-based: {IsGuidEmail}", isGuidEmail);
+                }
+
+                // If email not found in claims OR it's a GUID-based email, try to get real email from Microsoft Graph API
+                if (string.IsNullOrEmpty(userEmail) || isGuidEmail)
+                {
+                    _logger.LogWarning("Email not found in claims or is GUID-based, attempting to get real email from Microsoft Graph API");
+                    try
+                    {
+                        var graphClient = await _graphApiService.GetDelegatedGraphClientAsync();
+                        var user = await graphClient.Me.GetAsync();
+                        
+                        if (user != null)
+                        {
+                            var realEmail = user.Mail ?? user.UserPrincipalName;
+                            if (!string.IsNullOrEmpty(realEmail))
+                            {
+                                _logger.LogInformation("Successfully retrieved real email from Graph API: {RealEmail} (was: {OriginalEmail})", realEmail, userEmail);
+                                userEmail = realEmail;
+                            }
+                            else
+                            {
+                                _logger.LogWarning("Graph API returned user but no email found. User.Mail: {Mail}, User.UserPrincipalName: {UPN}", user.Mail, user.UserPrincipalName);
+                            }
+                        }
+                        else
+                        {
+                            _logger.LogWarning("Graph API returned null user");
+                        }
+                    }
+                    catch (Exception graphEx)
+                    {
+                        _logger.LogError(graphEx, "Failed to get email from Graph API");
+                    }
+                }
+
+                if (string.IsNullOrEmpty(userEmail))
+                {
+                    _logger.LogError("User email not found in claims or Graph API");
+                    return RedirectToAction("ProfileError", new { message = "User email not found in authentication claims or Graph API" });
+                }
+
+                _logger.LogInformation("Using email for API call: {Email}", userEmail);
+
+                // Get access token for API authentication
+                string accessToken = null;
+                try
+                {
+                    // Try to get access token from the current authentication context
+                    accessToken = await HttpContext.GetTokenAsync("access_token");
+                    if (string.IsNullOrEmpty(accessToken))
+                    {
+                        // Try different authentication schemes
+                        var authScheme = User.Claims.FirstOrDefault(c => c.Type == "auth_scheme")?.Value;
+                        if (!string.IsNullOrEmpty(authScheme))
+                        {
+                            accessToken = await HttpContext.GetTokenAsync(authScheme, "access_token");
+                        }
+                    }
+                    
+                    if (!string.IsNullOrEmpty(accessToken))
+                    {
+                        _logger.LogInformation("Access token retrieved successfully for external API call");
+                    }
+                    else
+                    {
+                        _logger.LogWarning("No access token found - proceeding without authentication header");
+                    }
+                }
+                catch (Exception tokenEx)
+                {
+                    _logger.LogWarning(tokenEx, "Failed to retrieve access token - proceeding without authentication header");
+                }
+
+                // Call external REST API
+                var httpClient = _httpClientFactory.CreateClient();
+                
+                // Add authentication header if access token is available
+                if (!string.IsNullOrEmpty(accessToken))
+                {
+                    httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+                }
+                
+                var baseUrl = _configuration["MultiAppConfig:ExternalApi:BaseUrl"];
+                var endpoint = _configuration["MultiAppConfig:ExternalApi:GetUserByEmailEndpoint"];
+                var apiUrl = $"{baseUrl}{endpoint}?email={Uri.EscapeDataString(userEmail)}";
+                
+                _logger.LogInformation("Calling external API: {ApiUrl} with authentication: {HasAuth}", apiUrl, !string.IsNullOrEmpty(accessToken));
+                
+                var response = await httpClient.GetAsync(apiUrl);
+                
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    _logger.LogError("External API returned error status: {StatusCode}, Email: {Email}, Response: {ErrorContent}", 
+                        response.StatusCode, userEmail, errorContent);
+                    
+                    var errorMessage = response.StatusCode switch
+                    {
+                        HttpStatusCode.NotFound => $"User not found in external API. Email used: '{userEmail}'. Please ensure this user exists in the external system. You can also check /Home/DebugProfileApi for detailed debugging information.",
+                        HttpStatusCode.Unauthorized => "Authentication failed. Please check if the access token is valid.",
+                        HttpStatusCode.Forbidden => "Access denied. Please check API permissions.",
+                        _ => $"External API error: {response.StatusCode} - {errorContent}"
+                    };
+                    
+                    return RedirectToAction("ProfileError", new { message = errorMessage });
+                }
+
+                var jsonResponse = await response.Content.ReadAsStringAsync();
+                _logger.LogInformation("External API response: {Response}", jsonResponse);
+                
+                // Parse the JSON response
+                using var jsonDocument = JsonDocument.Parse(jsonResponse);
+                var root = jsonDocument.RootElement;
+
+                // Create user profile from external API data
                 var userProfile = new UserProfile
                 {
-                    Name = user.DisplayName,
-                    Email = user.Mail ?? user.UserPrincipalName,
-                    ObjectId = user.Id,
-                    GivenName = user.GivenName,
-                    Surname = user.Surname,
-                    StreetAddress = user.StreetAddress,
-                    City = user.City,
-                    StateProvince = user.State,
-                    CountryOrRegion = user.Country
+                    Name = GetJsonStringValue(root, "displayName") ?? GetJsonStringValue(root, "name"),
+                    Email = GetJsonStringValue(root, "mail") ?? GetJsonStringValue(root, "userPrincipalName") ?? userEmail,
+                    ObjectId = GetJsonStringValue(root, "id") ?? GetJsonStringValue(root, "objectId"),
+                    GivenName = GetJsonStringValue(root, "givenName"),
+                    Surname = GetJsonStringValue(root, "surname"),
+                    StreetAddress = GetJsonStringValue(root, "streetAddress"),
+                    City = GetJsonStringValue(root, "city"),
+                    StateProvince = GetJsonStringValue(root, "state") ?? GetJsonStringValue(root, "stateProvince"),
+                    CountryOrRegion = GetJsonStringValue(root, "country") ?? GetJsonStringValue(root, "countryOrRegion")
                 };
 
                 // Get updated fields from TempData if available
@@ -297,71 +437,219 @@ namespace Ext_ID_OIDC_web_Application.Controllers
 
                 return View(userProfile);
             }
-            catch (ServiceException ex)
+            catch (HttpRequestException ex)
             {
-                _logger.LogError(ex, "Graph API Service Exception");
-                var errorMessage = $"Graph API Error: {ex.Message}";
-                if (ex.ResponseHeaders != null)
-                {
-                    errorMessage += $"\nResponse Headers: {string.Join(", ", ex.ResponseHeaders.Select(h => $"{h.Key}={h.Value}"))}";
-                }
-                return RedirectToAction("ProfileError", new { message = errorMessage });
+                _logger.LogError(ex, "HTTP request exception when calling external API");
+                return RedirectToAction("ProfileError", new { message = $"Network error: {ex.Message}" });
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogError(ex, "JSON parsing exception when processing external API response");
+                return RedirectToAction("ProfileError", new { message = $"Invalid response format: {ex.Message}" });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error accessing Graph API");
-                return RedirectToAction("ProfileError", new { message = $"Error accessing Graph API: {ex.Message}" });
+                _logger.LogError(ex, "Error accessing external API");
+                return RedirectToAction("ProfileError", new { message = $"Error accessing external API: {ex.Message}" });
             }
         }
 
 
 
         [Authorize]
-        public async Task<IActionResult> TestGraphApi()
+        public async Task<IActionResult> TestUpdateApi()
         {
             try
             {
-                // Use delegated GraphApiService for /me requests
-                var graphClient = await _graphApiService.GetDelegatedGraphClientAsync();
-                
-                // Try to get user profile from Graph API
-                var user = await graphClient.Me.GetAsync();
+                // Get user's email from claims
+                var userEmail = User.Claims.FirstOrDefault(c => 
+                    c.Type == "email" || 
+                    c.Type == "preferred_username" || 
+                    c.Type == "emails" ||
+                    c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress" ||
+                    c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn" ||
+                    c.Type == "upn" ||
+                    c.Type == ClaimTypes.Email ||
+                    c.Type == ClaimTypes.Upn
+                )?.Value;
 
-                if (user == null)
+                if (string.IsNullOrEmpty(userEmail))
                 {
-                    _logger.LogWarning("Graph API returned null user profile");
-                    return Error("Failed to retrieve user profile from Graph API");
+                    return Json(new { success = false, error = "User email not found in claims" });
                 }
 
-                _logger.LogInformation("Successfully retrieved user profile from Graph API: {DisplayName}", user.DisplayName);
-
-                // Create a view model with the user information
-                var viewModel = new
+                // Get access token
+                string accessToken = null;
+                try
                 {
-                    DisplayName = user.DisplayName ?? "Not available",
-                    UserPrincipalName = user.UserPrincipalName ?? "Not available",
-                    Id = user.Id ?? "Not available",
-                    Mail = user.Mail ?? "Not available",
-                    JobTitle = user.JobTitle ?? "Not available",
-                    Department = user.Department ?? "Not available"
+                    accessToken = await HttpContext.GetTokenAsync("access_token");
+                    if (string.IsNullOrEmpty(accessToken))
+                    {
+                        var authScheme = User.Claims.FirstOrDefault(c => c.Type == "auth_scheme")?.Value;
+                        if (!string.IsNullOrEmpty(authScheme))
+                        {
+                            accessToken = await HttpContext.GetTokenAsync(authScheme, "access_token");
+                        }
+                    }
+                }
+                catch (Exception tokenEx)
+                {
+                    return Json(new { success = false, error = $"Token error: {tokenEx.Message}" });
+                }
+
+                // Create test update payload
+                var testPayload = new Dictionary<string, object>
+                {
+                    ["displayName"] = "Test Update " + DateTime.Now.ToString("HH:mm:ss"),
+                    ["givenName"] = "TestGiven",
+                    ["surname"] = "TestSurname"
                 };
 
-                return View("Index", viewModel);
-            }
-            catch (ServiceException ex)
-            {
-                _logger.LogError(ex, "Graph API Service Exception");
-                var errorMessage = $"Graph API Error: {ex.Message}";
-                if (ex.ResponseHeaders != null)
+                var httpClient = _httpClientFactory.CreateClient();
+                
+                // Add authentication header if access token is available
+                if (!string.IsNullOrEmpty(accessToken))
                 {
-                    errorMessage += $"\nResponse Headers: {string.Join(", ", ex.ResponseHeaders.Select(h => $"{h.Key}={h.Value}"))}";
+                    httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
                 }
-                return Error(errorMessage);
+                
+                var baseUrl = _configuration["MultiAppConfig:ExternalApi:BaseUrl"];
+                var endpoint = _configuration["MultiAppConfig:ExternalApi:UpdateUserByEmailEndpoint"];
+                var apiUrl = $"{baseUrl}{endpoint}?email={Uri.EscapeDataString(userEmail)}";
+                
+                var jsonContent = System.Text.Json.JsonSerializer.Serialize(testPayload);
+                var content = new StringContent(
+                    jsonContent,
+                    System.Text.Encoding.UTF8,
+                    "application/json"
+                );
+
+                // Make PATCH request
+                var request = new HttpRequestMessage(HttpMethod.Patch, apiUrl)
+                {
+                    Content = content
+                };
+                var response = await httpClient.SendAsync(request);
+                var responseContent = await response.Content.ReadAsStringAsync();
+                
+                var result = new
+                {
+                    success = response.IsSuccessStatusCode,
+                    statusCode = (int)response.StatusCode,
+                    userEmail = userEmail,
+                    apiUrl = apiUrl,
+                    hasAccessToken = !string.IsNullOrEmpty(accessToken),
+                    requestPayload = testPayload,
+                    responseHeaders = response.Headers.ToDictionary(h => h.Key, h => string.Join(", ", h.Value)),
+                    responseBody = responseContent
+                };
+
+                return Json(result);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error accessing Graph API");
-                return Error($"Error accessing Graph API: {ex.Message}");
+                return Json(new { success = false, error = ex.Message });
+            }
+        }
+
+        [Authorize]
+        public async Task<IActionResult> TestExternalApi()
+        {
+            try
+            {
+                // Try multiple possible email claim types
+                var userEmail = User.Claims.FirstOrDefault(c => 
+                    c.Type == "email" || 
+                    c.Type == "preferred_username" || 
+                    c.Type == "emails" ||
+                    c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress" ||
+                    c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn" ||
+                    c.Type == "upn" ||
+                    c.Type == ClaimTypes.Email ||
+                    c.Type == ClaimTypes.Upn
+                )?.Value;
+
+                // If email not found in claims, try to get it from Microsoft Graph API
+                if (string.IsNullOrEmpty(userEmail))
+                {
+                    try
+                    {
+                        var graphClient = await _graphApiService.GetDelegatedGraphClientAsync();
+                        var user = await graphClient.Me.GetAsync();
+                        userEmail = user.Mail ?? user.UserPrincipalName;
+                    }
+                    catch (Exception graphEx)
+                    {
+                        return Json(new { success = false, error = $"Email not found in claims and Graph API failed: {graphEx.Message}" });
+                    }
+                }
+
+                if (string.IsNullOrEmpty(userEmail))
+                {
+                    return Json(new { 
+                        success = false, 
+                        error = "User email not found in claims or Graph API",
+                        availableClaims = User.Claims.Select(c => new { type = c.Type, value = c.Value }).ToList()
+                    });
+                }
+
+                // Get access token for API authentication
+                string accessToken = null;
+                try
+                {
+                    // Try to get access token from the current authentication context
+                    accessToken = await HttpContext.GetTokenAsync("access_token");
+                    if (string.IsNullOrEmpty(accessToken))
+                    {
+                        // Try different authentication schemes
+                        var authScheme = User.Claims.FirstOrDefault(c => c.Type == "auth_scheme")?.Value;
+                        if (!string.IsNullOrEmpty(authScheme))
+                        {
+                            accessToken = await HttpContext.GetTokenAsync(authScheme, "access_token");
+                        }
+                    }
+                }
+                catch (Exception tokenEx)
+                {
+                    // Continue without token for testing
+                }
+
+                // Call external REST API
+                var httpClient = _httpClientFactory.CreateClient();
+                
+                // Add authentication header if access token is available
+                if (!string.IsNullOrEmpty(accessToken))
+                {
+                    httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+                }
+                var baseUrl = _configuration["MultiAppConfig:ExternalApi:BaseUrl"];
+                var endpoint = _configuration["MultiAppConfig:ExternalApi:GetUserByEmailEndpoint"];
+                var apiUrl = $"{baseUrl}{endpoint}?email={Uri.EscapeDataString(userEmail)}";
+                
+                _logger.LogInformation("Testing external API: {ApiUrl}", apiUrl);
+                
+                var response = await httpClient.GetAsync(apiUrl);
+                var jsonResponse = await response.Content.ReadAsStringAsync();
+                
+                var result = new
+                {
+                    success = response.IsSuccessStatusCode,
+                    statusCode = (int)response.StatusCode,
+                    userEmail = userEmail,
+                    apiUrl = apiUrl,
+                    hasAccessToken = !string.IsNullOrEmpty(accessToken),
+                    accessTokenPreview = !string.IsNullOrEmpty(accessToken) ? accessToken.Substring(0, Math.Min(20, accessToken.Length)) + "..." : null,
+                    authScheme = User.Claims.FirstOrDefault(c => c.Type == "auth_scheme")?.Value,
+                    responseHeaders = response.Headers.ToDictionary(h => h.Key, h => string.Join(", ", h.Value)),
+                    responseBody = jsonResponse
+                };
+
+                return Json(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error testing external API");
+                return Json(new { success = false, error = ex.Message });
             }
         }
 
@@ -590,73 +878,147 @@ namespace Ext_ID_OIDC_web_Application.Controllers
         {
             try
             {
-                // Use delegated GraphApiService for /me requests (user context)
-                var graphClient = await _graphApiService.GetDelegatedGraphClientAsync();
-                
-                // Get real-time user data from Graph API with specific fields
-                var user = await graphClient.Me.GetAsync(requestConfiguration => {
-                    requestConfiguration.QueryParameters.Select = new[] {
-                    "id",
-                    "displayName",
-                    "givenName",
-                    "surname",
-                    "mail",
-                    "userPrincipalName",
-                    "streetAddress",
-                    "city",
-                    "state",
-                    "country",
-                    "postalCode"
-                };
-                });
+                // Get user's email from claims with multiple fallback options
+                var userEmail = User.Claims.FirstOrDefault(c => 
+                    c.Type == "email" || 
+                    c.Type == "preferred_username" || 
+                    c.Type == "emails" ||
+                    c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress" ||
+                    c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn" ||
+                    c.Type == "upn" ||
+                    c.Type == ClaimTypes.Email ||
+                    c.Type == ClaimTypes.Upn
+                )?.Value;
 
-                if (user == null)
+                _logger.LogInformation("Initial userEmail from claims for edit: {UserEmail}", userEmail);
+
+                // Check if this is a GUID-based email (common with App3)
+                bool isGuidEmail = false;
+                if (!string.IsNullOrEmpty(userEmail) && userEmail.Contains("@"))
                 {
-                    _logger.LogWarning("Graph API returned null user profile");
-                    return Error("Failed to retrieve user profile from Graph API");
+                    var emailPart = userEmail.Split('@')[0];
+                    isGuidEmail = Guid.TryParse(emailPart, out _);
+                    _logger.LogInformation("Email appears to be GUID-based for edit: {IsGuidEmail}", isGuidEmail);
                 }
 
-                _logger.LogInformation("Retrieved user data: {@UserData}", new
+                // If email not found in claims OR it's a GUID-based email, try to get real email from Microsoft Graph API
+                if (string.IsNullOrEmpty(userEmail) || isGuidEmail)
                 {
-                    DisplayName = user.DisplayName,
-                    GivenName = user.GivenName,
-                    Surname = user.Surname,
-                    StreetAddress = user.StreetAddress,
-                    City = user.City,
-                    State = user.State,
-                    Country = user.Country
-                });
+                    _logger.LogWarning("Email not found in claims or is GUID-based for edit, attempting to get real email from Microsoft Graph API");
+                    try
+                    {
+                        var graphClient = await _graphApiService.GetDelegatedGraphClientAsync();
+                        var user = await graphClient.Me.GetAsync();
+                        
+                        if (user != null)
+                        {
+                            var realEmail = user.Mail ?? user.UserPrincipalName;
+                            if (!string.IsNullOrEmpty(realEmail))
+                            {
+                                _logger.LogInformation("Successfully retrieved real email from Graph API for edit: {RealEmail} (was: {OriginalEmail})", realEmail, userEmail);
+                                userEmail = realEmail;
+                            }
+                            else
+                            {
+                                _logger.LogWarning("Graph API returned user but no email found for edit. User.Mail: {Mail}, User.UserPrincipalName: {UPN}", user.Mail, user.UserPrincipalName);
+                            }
+                        }
+                        else
+                        {
+                            _logger.LogWarning("Graph API returned null user for edit");
+                        }
+                    }
+                    catch (Exception graphEx)
+                    {
+                        _logger.LogError(graphEx, "Failed to get email from Graph API for edit");
+                    }
+                }
 
-                // Create user profile from Graph API data
+                if (string.IsNullOrEmpty(userEmail))
+                {
+                    _logger.LogError("User email not found in claims or Graph API");
+                    return Error("User email not found in authentication claims or Graph API");
+                }
+
+                // Get access token for API authentication
+                string accessToken = null;
+                try
+                {
+                    accessToken = await HttpContext.GetTokenAsync("access_token");
+                    if (string.IsNullOrEmpty(accessToken))
+                    {
+                        var authScheme = User.Claims.FirstOrDefault(c => c.Type == "auth_scheme")?.Value;
+                        if (!string.IsNullOrEmpty(authScheme))
+                        {
+                            accessToken = await HttpContext.GetTokenAsync(authScheme, "access_token");
+                        }
+                    }
+                }
+                catch (Exception tokenEx)
+                {
+                    _logger.LogWarning(tokenEx, "Failed to retrieve access token");
+                }
+
+                // Call external REST API to get user profile
+                var httpClient = _httpClientFactory.CreateClient();
+                
+                // Add authentication header if access token is available
+                if (!string.IsNullOrEmpty(accessToken))
+                {
+                    httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+                }
+                
+                var baseUrl = _configuration["MultiAppConfig:ExternalApi:BaseUrl"];
+                var endpoint = _configuration["MultiAppConfig:ExternalApi:GetUserByEmailEndpoint"];
+                var apiUrl = $"{baseUrl}{endpoint}?email={Uri.EscapeDataString(userEmail)}";
+                
+                _logger.LogInformation("Calling external API for edit profile: {ApiUrl}", apiUrl);
+                
+                var response = await httpClient.GetAsync(apiUrl);
+                
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogError("External API returned error status: {StatusCode}", response.StatusCode);
+                    return Error($"External API error: {response.StatusCode}");
+                }
+
+                var jsonResponse = await response.Content.ReadAsStringAsync();
+                _logger.LogInformation("External API response for edit: {Response}", jsonResponse);
+                
+                // Parse the JSON response
+                using var jsonDocument = JsonDocument.Parse(jsonResponse);
+                var root = jsonDocument.RootElement;
+
+                // Create user profile from external API data
                 var userProfile = new UserProfile
                 {
-                    Name = user.DisplayName,
-                    Email = user.Mail ?? user.UserPrincipalName,
-                    ObjectId = user.Id,
-                    GivenName = user.GivenName,
-                    Surname = user.Surname,
-                    StreetAddress = user.StreetAddress,
-                    City = user.City,
-                    StateProvince = user.State,
-                    CountryOrRegion = user.Country
+                    Name = GetJsonStringValue(root, "displayName") ?? GetJsonStringValue(root, "name"),
+                    Email = GetJsonStringValue(root, "mail") ?? GetJsonStringValue(root, "userPrincipalName") ?? userEmail,
+                    ObjectId = GetJsonStringValue(root, "id") ?? GetJsonStringValue(root, "objectId"),
+                    GivenName = GetJsonStringValue(root, "givenName"),
+                    Surname = GetJsonStringValue(root, "surname"),
+                    StreetAddress = GetJsonStringValue(root, "streetAddress"),
+                    City = GetJsonStringValue(root, "city"),
+                    StateProvince = GetJsonStringValue(root, "state") ?? GetJsonStringValue(root, "stateProvince"),
+                    CountryOrRegion = GetJsonStringValue(root, "country") ?? GetJsonStringValue(root, "countryOrRegion")
                 };
 
                 return View(userProfile);
             }
-            catch (ServiceException ex)
+            catch (HttpRequestException ex)
             {
-                _logger.LogError(ex, "Graph API Service Exception");
-                var errorMessage = $"Graph API Error: {ex.Message}";
-                if (ex.ResponseHeaders != null)
-                {
-                    errorMessage += $"\nResponse Headers: {string.Join(", ", ex.ResponseHeaders.Select(h => $"{h.Key}={h.Value}"))}";
-                }
-                return Error(errorMessage);
+                _logger.LogError(ex, "HTTP request exception when calling external API for edit profile");
+                return Error($"Network error: {ex.Message}");
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogError(ex, "JSON parsing exception when processing external API response for edit profile");
+                return Error($"Invalid response format: {ex.Message}");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error accessing Graph API");
-                return Error($"Error accessing Graph API: {ex.Message}");
+                _logger.LogError(ex, "Error accessing external API for edit profile");
+                return Error($"Error accessing external API: {ex.Message}");
             }
         }
 
@@ -689,66 +1051,159 @@ namespace Ext_ID_OIDC_web_Application.Controllers
                     return View("EditProfile", model);
                 }
 
-                // Get the current user's ID using delegated permissions
-                _logger.LogInformation("Fetching current user from Graph API");
-                var delegatedGraphClient = await _graphApiService.GetDelegatedGraphClientAsync();
-                var currentUser = await delegatedGraphClient.Me.GetAsync();
-                if (currentUser == null)
+                // Get user's email from claims with multiple fallback options
+                var userEmail = User.Claims.FirstOrDefault(c => 
+                    c.Type == "email" || 
+                    c.Type == "preferred_username" || 
+                    c.Type == "emails" ||
+                    c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress" ||
+                    c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn" ||
+                    c.Type == "upn" ||
+                    c.Type == ClaimTypes.Email ||
+                    c.Type == ClaimTypes.Upn
+                )?.Value;
+
+                _logger.LogInformation("Initial userEmail from claims for update: {UserEmail}", userEmail);
+
+                // Check if this is a GUID-based email (common with App3)
+                bool isGuidEmail = false;
+                if (!string.IsNullOrEmpty(userEmail) && userEmail.Contains("@"))
                 {
-                    _logger.LogError("Failed to get current user from Graph API");
-                    return Error("Failed to get current user information");
+                    var emailPart = userEmail.Split('@')[0];
+                    isGuidEmail = Guid.TryParse(emailPart, out _);
+                    _logger.LogInformation("Email appears to be GUID-based for update: {IsGuidEmail}", isGuidEmail);
                 }
 
-                // Use application permissions for write operations
-                var appGraphClient = await _graphApiService.GetApplicationGraphClientAsync();
-
-                // Create update user object matching Microsoft Graph API format exactly
-                var updateUser = new
+                // If email not found in claims OR it's a GUID-based email, try to get real email from Microsoft Graph API
+                if (string.IsNullOrEmpty(userEmail) || isGuidEmail)
                 {
-                    displayName = model.Name,
-                    givenName = model.GivenName,
-                    surname = model.Surname,
-                    streetAddress = model.StreetAddress,
-                    city = model.City,
-                    state = model.StateProvince,
-                    country = model.CountryOrRegion
-                };
+                    _logger.LogWarning("Email not found in claims or is GUID-based for update, attempting to get real email from Microsoft Graph API");
+                    try
+                    {
+                        var graphClient = await _graphApiService.GetDelegatedGraphClientAsync();
+                        var user = await graphClient.Me.GetAsync();
+                        
+                        if (user != null)
+                        {
+                            var realEmail = user.Mail ?? user.UserPrincipalName;
+                            if (!string.IsNullOrEmpty(realEmail))
+                            {
+                                _logger.LogInformation("Successfully retrieved real email from Graph API for update: {RealEmail} (was: {OriginalEmail})", realEmail, userEmail);
+                                userEmail = realEmail;
+                            }
+                            else
+                            {
+                                _logger.LogWarning("Graph API returned user but no email found for update. User.Mail: {Mail}, User.UserPrincipalName: {UPN}", user.Mail, user.UserPrincipalName);
+                            }
+                        }
+                        else
+                        {
+                            _logger.LogWarning("Graph API returned null user for update");
+                        }
+                    }
+                    catch (Exception graphEx)
+                    {
+                        _logger.LogError(graphEx, "Failed to get email from Graph API for update");
+                    }
+                }
 
-                // Log the update request
-                _logger.LogInformation("Preparing update request with data: {@UpdateData}", updateUser);
+                if (string.IsNullOrEmpty(userEmail))
+                {
+                    _logger.LogError("User email not found for profile update");
+                    ModelState.AddModelError("", "User email not found. Cannot update profile.");
+                    return View("EditProfile", model);
+                }
 
-                // Convert to JSON
-                var jsonContent = System.Text.Json.JsonSerializer.Serialize(updateUser);
+                // Get access token for API authentication
+                string accessToken = null;
+                try
+                {
+                    accessToken = await HttpContext.GetTokenAsync("access_token");
+                    if (string.IsNullOrEmpty(accessToken))
+                    {
+                        var authScheme = User.Claims.FirstOrDefault(c => c.Type == "auth_scheme")?.Value;
+                        if (!string.IsNullOrEmpty(authScheme))
+                        {
+                            accessToken = await HttpContext.GetTokenAsync(authScheme, "access_token");
+                        }
+                    }
+                }
+                catch (Exception tokenEx)
+                {
+                    _logger.LogWarning(tokenEx, "Failed to retrieve access token for update");
+                }
 
-                // Create HTTP content
+                // Create update payload based on your API requirements
+                var updatePayload = new Dictionary<string, object>();
+                
+                // Add fields that are not null or empty
+                if (!string.IsNullOrWhiteSpace(model.Name))
+                    updatePayload["displayName"] = model.Name;
+                if (!string.IsNullOrWhiteSpace(model.GivenName))
+                    updatePayload["givenName"] = model.GivenName;
+                if (!string.IsNullOrWhiteSpace(model.Surname))
+                    updatePayload["surname"] = model.Surname;
+                if (!string.IsNullOrWhiteSpace(model.StreetAddress))
+                    updatePayload["streetAddress"] = model.StreetAddress;
+                if (!string.IsNullOrWhiteSpace(model.City))
+                    updatePayload["city"] = model.City;
+                if (!string.IsNullOrWhiteSpace(model.StateProvince))
+                    updatePayload["state"] = model.StateProvince;
+                if (!string.IsNullOrWhiteSpace(model.CountryOrRegion))
+                    updatePayload["country"] = model.CountryOrRegion;
+
+                _logger.LogInformation("Preparing update request with payload: {@UpdatePayload}", updatePayload);
+
+                // Call external REST API for update
+                var httpClient = _httpClientFactory.CreateClient();
+                
+                // Add authentication header if access token is available
+                if (!string.IsNullOrEmpty(accessToken))
+                {
+                    httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+                }
+                
+                var baseUrl = _configuration["MultiAppConfig:ExternalApi:BaseUrl"];
+                var endpoint = _configuration["MultiAppConfig:ExternalApi:UpdateUserByEmailEndpoint"];
+                var apiUrl = $"{baseUrl}{endpoint}?email={Uri.EscapeDataString(userEmail)}";
+                
+                _logger.LogInformation("Calling external API for update: {ApiUrl}", apiUrl);
+                
+                // Convert payload to JSON
+                var jsonContent = System.Text.Json.JsonSerializer.Serialize(updatePayload);
                 var content = new StringContent(
                     jsonContent,
                     System.Text.Encoding.UTF8,
                     "application/json"
                 );
 
-                try
+                // Make PATCH request
+                var request = new HttpRequestMessage(HttpMethod.Patch, apiUrl)
                 {
-                    await appGraphClient.Users[currentUser.Id].PatchAsync(new Microsoft.Graph.Models.User
-                    {
-                        DisplayName = model.Name,
-                        GivenName = model.GivenName,
-                        Surname = model.Surname,
-                        StreetAddress = model.StreetAddress,
-                        City = model.City,
-                        State = model.StateProvince,
-                        Country = model.CountryOrRegion
-                    });
-
+                    Content = content
+                };
+                var response = await httpClient.SendAsync(request);
+                
+                if (response.IsSuccessStatusCode)
+                {
+                    var responseContent = await response.Content.ReadAsStringAsync();
+                    _logger.LogInformation("Profile updated successfully via external API: {Response}", responseContent);
                     TempData["SuccessMessage"] = "Profile updated successfully!";
                     return RedirectToAction("Profile");
                 }
-                catch (ServiceException ex)
+                else
                 {
-                    _logger.LogError(ex, "Failed to update profile via Graph SDK");
-                    ModelState.AddModelError("", ex.Message);
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    _logger.LogError("External API update failed with status {StatusCode}: {ErrorContent}", response.StatusCode, errorContent);
+                    ModelState.AddModelError("", $"Failed to update profile: {response.StatusCode} - {errorContent}");
                     return View("EditProfile", model);
                 }
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogError(ex, "HTTP request exception during profile update");
+                ModelState.AddModelError("", $"Network error during update: {ex.Message}");
+                return View("EditProfile", model);
             }
             catch (Exception ex)
             {
@@ -781,33 +1236,309 @@ namespace Ext_ID_OIDC_web_Application.Controllers
         [Authorize]
         [HttpPost]
         [ValidateAntiForgeryToken]
+        public async Task<IActionResult> ResetPassword(string newPassword)
+        {
+            try
+            {
+                _logger.LogInformation("Starting password reset for user");
+
+                // Validate the new password
+                if (string.IsNullOrWhiteSpace(newPassword))
+                {
+                    TempData["Error"] = "New password is required.";
+                    return RedirectToAction("Profile");
+                }
+
+                if (newPassword.Length < 8)
+                {
+                    TempData["Error"] = "Password must be at least 8 characters long.";
+                    return RedirectToAction("Profile");
+                }
+
+                // Get user's email from claims with multiple fallback options
+                var userEmail = User.Claims.FirstOrDefault(c => 
+                    c.Type == "email" || 
+                    c.Type == "preferred_username" || 
+                    c.Type == "emails" ||
+                    c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress" ||
+                    c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn" ||
+                    c.Type == "upn" ||
+                    c.Type == ClaimTypes.Email ||
+                    c.Type == ClaimTypes.Upn
+                )?.Value;
+
+                _logger.LogInformation("Initial userEmail from claims for password reset: {UserEmail}", userEmail);
+
+                // Check if this is a GUID-based email (common with App3)
+                bool isGuidEmail = false;
+                if (!string.IsNullOrEmpty(userEmail) && userEmail.Contains("@"))
+                {
+                    var emailPart = userEmail.Split('@')[0];
+                    isGuidEmail = Guid.TryParse(emailPart, out _);
+                    _logger.LogInformation("Email appears to be GUID-based for password reset: {IsGuidEmail}", isGuidEmail);
+                }
+
+                // If email not found in claims OR it's a GUID-based email, try to get real email from Microsoft Graph API
+                if (string.IsNullOrEmpty(userEmail) || isGuidEmail)
+                {
+                    _logger.LogWarning("Email not found in claims or is GUID-based for password reset, attempting to get real email from Microsoft Graph API");
+                    try
+                    {
+                        var graphClient = await _graphApiService.GetDelegatedGraphClientAsync();
+                        var user = await graphClient.Me.GetAsync();
+                        
+                        if (user != null)
+                        {
+                            var realEmail = user.Mail ?? user.UserPrincipalName;
+                            if (!string.IsNullOrEmpty(realEmail))
+                            {
+                                _logger.LogInformation("Successfully retrieved real email from Graph API for password reset: {RealEmail} (was: {OriginalEmail})", realEmail, userEmail);
+                                userEmail = realEmail;
+                            }
+                            else
+                            {
+                                _logger.LogWarning("Graph API returned user but no email found for password reset. User.Mail: {Mail}, User.UserPrincipalName: {UPN}", user.Mail, user.UserPrincipalName);
+                            }
+                        }
+                        else
+                        {
+                            _logger.LogWarning("Graph API returned null user for password reset");
+                        }
+                    }
+                    catch (Exception graphEx)
+                    {
+                        _logger.LogError(graphEx, "Failed to get email from Graph API for password reset");
+                    }
+                }
+
+                if (string.IsNullOrEmpty(userEmail))
+                {
+                    _logger.LogError("User email not found for password reset");
+                    TempData["Error"] = "User email not found. Cannot reset password.";
+                    return RedirectToAction("Profile");
+                }
+
+                // Get access token for API authentication
+                string accessToken = null;
+                try
+                {
+                    accessToken = await HttpContext.GetTokenAsync("access_token");
+                    if (string.IsNullOrEmpty(accessToken))
+                    {
+                        var authScheme = User.Claims.FirstOrDefault(c => c.Type == "auth_scheme")?.Value;
+                        if (!string.IsNullOrEmpty(authScheme))
+                        {
+                            accessToken = await HttpContext.GetTokenAsync(authScheme, "access_token");
+                        }
+                    }
+                }
+                catch (Exception tokenEx)
+                {
+                    _logger.LogWarning(tokenEx, "Failed to retrieve access token for password reset");
+                }
+
+                // Create password reset payload
+                var resetPayload = new Dictionary<string, object>
+                {
+                    ["newPassword"] = newPassword
+                };
+
+                _logger.LogInformation("Preparing password reset request for email: {Email}", userEmail);
+
+                // Call external REST API for password reset
+                var httpClient = _httpClientFactory.CreateClient();
+                
+                // Add authentication header if access token is available
+                if (!string.IsNullOrEmpty(accessToken))
+                {
+                    httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+                }
+                else
+                {
+                    _logger.LogWarning("No access token available for password reset API call");
+                }
+                
+                var baseUrl = _configuration["MultiAppConfig:ExternalApi:BaseUrl"];
+                var endpoint = _configuration["MultiAppConfig:ExternalApi:ResetPasswordByEmailEndpoint"];
+                var apiUrl = $"{baseUrl}{endpoint}?email={Uri.EscapeDataString(userEmail)}";
+                
+                _logger.LogInformation("Calling external API for password reset: {ApiUrl}", apiUrl);
+                
+                // Convert payload to JSON
+                var jsonContent = System.Text.Json.JsonSerializer.Serialize(resetPayload);
+                var content = new StringContent(
+                    jsonContent,
+                    System.Text.Encoding.UTF8,
+                    "application/json"
+                );
+
+                // Make PATCH request
+                var request = new HttpRequestMessage(HttpMethod.Patch, apiUrl)
+                {
+                    Content = content
+                };
+                var response = await httpClient.SendAsync(request);
+                
+                if (response.IsSuccessStatusCode)
+                {
+                    var responseContent = await response.Content.ReadAsStringAsync();
+                    _logger.LogInformation("Password reset successfully via external API: {Response}", responseContent);
+                    TempData["SuccessMessage"] = "Password reset successfully! Please use your new password for future logins.";
+                    return RedirectToAction("Profile");
+                }
+                else
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    _logger.LogError("External API password reset failed with status {StatusCode}: {ErrorContent}", response.StatusCode, errorContent);
+                    
+                    var errorMessage = response.StatusCode switch
+                    {
+                        HttpStatusCode.NotFound => $"User not found in external API. Email used: '{userEmail}'. Please ensure this user exists in the external system.",
+                        HttpStatusCode.Unauthorized => "Authentication failed. Please check if the access token is valid.",
+                        HttpStatusCode.Forbidden => "Access denied. Please check API permissions for password reset.",
+                        HttpStatusCode.BadRequest => $"Invalid password format or other validation error: {errorContent}",
+                        _ => $"Password reset failed: {response.StatusCode} - {errorContent}"
+                    };
+                    
+                    TempData["Error"] = errorMessage;
+                    return RedirectToAction("Profile");
+                }
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogError(ex, "HTTP request exception during password reset");
+                TempData["Error"] = $"Network error during password reset: {ex.Message}";
+                return RedirectToAction("Profile");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in ResetPassword action: {Message}", ex.Message);
+                TempData["Error"] = "An unexpected error occurred during password reset. Please try again.";
+                return RedirectToAction("Profile");
+            }
+        }
+
+
+
+        [Authorize]
+        [HttpPost]
+        [ValidateAntiForgeryToken]
         public async Task<IActionResult> DeleteProfile()
         {
             try
             {
-                // Use delegated permissions to get current user info
-                var delegatedGraphClient = await _graphApiService.GetDelegatedGraphClientAsync();
-                
-                // Get current user info
-                var user = await delegatedGraphClient.Me.GetAsync();
-                if (user == null)
+                _logger.LogInformation("Starting profile deletion for user");
+
+                // Get user's email from claims with multiple fallback options
+                var userEmail = User.Claims.FirstOrDefault(c => 
+                    c.Type == "email" || 
+                    c.Type == "preferred_username" || 
+                    c.Type == "emails" ||
+                    c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress" ||
+                    c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn" ||
+                    c.Type == "upn" ||
+                    c.Type == ClaimTypes.Email ||
+                    c.Type == ClaimTypes.Upn
+                )?.Value;
+
+                _logger.LogInformation("Initial userEmail from claims for profile deletion: {UserEmail}", userEmail);
+
+                // Check if this is a GUID-based email (common with App3)
+                bool isGuidEmail = false;
+                if (!string.IsNullOrEmpty(userEmail) && userEmail.Contains("@"))
                 {
-                    _logger.LogError("Failed to get current user information");
-                    TempData["Error"] = "Failed to get user information. Please try again.";
-                    return RedirectToAction(nameof(Profile));
+                    var emailPart = userEmail.Split('@')[0];
+                    isGuidEmail = Guid.TryParse(emailPart, out _);
+                    _logger.LogInformation("Email appears to be GUID-based for profile deletion: {IsGuidEmail}", isGuidEmail);
                 }
 
-                // Use application permissions for delete operation
-                var appGraphClient = await _graphApiService.GetApplicationGraphClientAsync();
+                // If email not found in claims OR it's a GUID-based email, try to get real email from Microsoft Graph API
+                if (string.IsNullOrEmpty(userEmail) || isGuidEmail)
+                {
+                    _logger.LogWarning("Email not found in claims or is GUID-based for profile deletion, attempting to get real email from Microsoft Graph API");
+                    try
+                    {
+                        var graphClient = await _graphApiService.GetDelegatedGraphClientAsync();
+                        var user = await graphClient.Me.GetAsync();
+                        
+                        if (user != null)
+                        {
+                            var realEmail = user.Mail ?? user.UserPrincipalName;
+                            if (!string.IsNullOrEmpty(realEmail))
+                            {
+                                _logger.LogInformation("Successfully retrieved real email from Graph API for profile deletion: {RealEmail} (was: {OriginalEmail})", realEmail, userEmail);
+                                userEmail = realEmail;
+                            }
+                            else
+                            {
+                                _logger.LogWarning("Graph API returned user but no email found for profile deletion. User.Mail: {Mail}, User.UserPrincipalName: {UPN}", user.Mail, user.UserPrincipalName);
+                            }
+                        }
+                        else
+                        {
+                            _logger.LogWarning("Graph API returned null user for profile deletion");
+                        }
+                    }
+                    catch (Exception graphEx)
+                    {
+                        _logger.LogError(graphEx, "Failed to get email from Graph API for profile deletion");
+                    }
+                }
 
+                if (string.IsNullOrEmpty(userEmail))
+                {
+                    _logger.LogError("User email not found for profile deletion");
+                    TempData["Error"] = "User email not found. Cannot delete profile.";
+                    return RedirectToAction("Profile");
+                }
+
+                // Get access token for API authentication
+                string accessToken = null;
                 try
                 {
-                    // Delete the user using the Graph SDK with application permissions
-                    await appGraphClient.Users[user.Id].DeleteAsync();
+                    accessToken = await HttpContext.GetTokenAsync("access_token");
+                    if (string.IsNullOrEmpty(accessToken))
+                    {
+                        var authScheme = User.Claims.FirstOrDefault(c => c.Type == "auth_scheme")?.Value;
+                        if (!string.IsNullOrEmpty(authScheme))
+                        {
+                            accessToken = await HttpContext.GetTokenAsync(authScheme, "access_token");
+                        }
+                    }
+                }
+                catch (Exception tokenEx)
+                {
+                    _logger.LogWarning(tokenEx, "Failed to retrieve access token for profile deletion");
+                }
 
-                    _logger.LogInformation("User {UserId} was successfully deleted", user.Id);
-
-                    // Sign out the user after deletion
+                // Call external REST API for profile deletion
+                var httpClient = _httpClientFactory.CreateClient();
+                
+                // Add authentication header if access token is available
+                if (!string.IsNullOrEmpty(accessToken))
+                {
+                    httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+                }
+                else
+                {
+                    _logger.LogWarning("No access token available for profile deletion API call");
+                }
+                
+                var baseUrl = _configuration["MultiAppConfig:ExternalApi:BaseUrl"];
+                var endpoint = _configuration["MultiAppConfig:ExternalApi:DeleteUserByEmailEndpoint"];
+                var apiUrl = $"{baseUrl}{endpoint}?email={Uri.EscapeDataString(userEmail)}";
+                
+                _logger.LogInformation("Calling external API for profile deletion: {ApiUrl}", apiUrl);
+                
+                // Make DELETE request
+                var response = await httpClient.DeleteAsync(apiUrl);
+                
+                if (response.IsSuccessStatusCode)
+                {
+                    var responseContent = await response.Content.ReadAsStringAsync();
+                    _logger.LogInformation("Profile deleted successfully via external API: {Response}", responseContent);
+                    
+                    // Sign out the user after successful deletion
                     await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
                     await HttpContext.SignOutAsync("App1Scheme");
                     await HttpContext.SignOutAsync("App2Scheme");
@@ -816,29 +1547,39 @@ namespace Ext_ID_OIDC_web_Application.Controllers
                     // Clear session
                     HttpContext.Session.Clear();
 
+                    // Redirect to home page with success message
+                    TempData["SuccessMessage"] = "Your profile has been successfully deleted.";
                     return RedirectToAction("Index", "Home");
                 }
-                catch (ServiceException ex)
+                else
                 {
-                    _logger.LogError(ex, "Graph API Service Exception during user deletion");
-
-                    if (ex.ResponseStatusCode == (int)System.Net.HttpStatusCode.Forbidden)
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    _logger.LogError("External API profile deletion failed with status {StatusCode}: {ErrorContent}", response.StatusCode, errorContent);
+                    
+                    var errorMessage = response.StatusCode switch
                     {
-                        TempData["Error"] = "You don't have sufficient permissions to delete your account. Please contact your administrator.";
-                    }
-                    else
-                    {
-                        TempData["Error"] = $"Failed to delete account: {ex.Message}";
-                    }
-
-                    return RedirectToAction(nameof(Profile));
+                        HttpStatusCode.NotFound => $"User not found in external API. Email used: '{userEmail}'. Please ensure this user exists in the external system.",
+                        HttpStatusCode.Unauthorized => "Authentication failed. Please check if the access token is valid.",
+                        HttpStatusCode.Forbidden => "Access denied. Please check API permissions for profile deletion.",
+                        HttpStatusCode.Conflict => "Profile deletion failed due to existing dependencies or constraints.",
+                        _ => $"Profile deletion failed: {response.StatusCode} - {errorContent}"
+                    };
+                    
+                    TempData["Error"] = errorMessage;
+                    return RedirectToAction("Profile");
                 }
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogError(ex, "HTTP request exception during profile deletion");
+                TempData["Error"] = $"Network error during profile deletion: {ex.Message}";
+                return RedirectToAction("Profile");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error deleting user profile");
-                TempData["Error"] = "An unexpected error occurred. Please try again later.";
-                return RedirectToAction(nameof(Profile));
+                _logger.LogError(ex, "Error in DeleteProfile action: {Message}", ex.Message);
+                TempData["Error"] = "An unexpected error occurred during profile deletion. Please try again.";
+                return RedirectToAction("Profile");
             }
         }
 
@@ -972,92 +1713,6 @@ namespace Ext_ID_OIDC_web_Application.Controllers
 
 
 
-        [Authorize]
-        [HttpPost]
-        [ValidateAntiForgeryToken]
-        public async Task<IActionResult> ResetPassword(string CurrentPassword, string NewPassword, string ConfirmPassword)
-        {
-            try
-            {
-                _logger.LogInformation("Starting password reset process");
-
-                // Validate inputs
-                if (string.IsNullOrEmpty(CurrentPassword) || string.IsNullOrEmpty(NewPassword) || string.IsNullOrEmpty(ConfirmPassword))
-                {
-                    TempData["Error"] = "All password fields are required.";
-                    return RedirectToAction(nameof(Profile));
-                }
-
-                if (NewPassword != ConfirmPassword)
-                {
-                    TempData["Error"] = "New password and confirmation password do not match.";
-                    return RedirectToAction(nameof(Profile));
-                }
-
-                // Validate password complexity
-                if (!IsPasswordComplex(NewPassword))
-                {
-                    TempData["Error"] = "New password does not meet complexity requirements.";
-                    return RedirectToAction(nameof(Profile));
-                }
-
-                // Get the current user using delegated permissions
-                var delegatedGraphClient = await _graphApiService.GetDelegatedGraphClientAsync();
-                var user = await delegatedGraphClient.Me.GetAsync();
-                if (user == null)
-                {
-                    _logger.LogError("Failed to get current user information");
-                    TempData["Error"] = "Failed to get user information. Please try again.";
-                    return RedirectToAction(nameof(Profile));
-                }
-
-                try
-                {
-                    // Use application permissions to perform admin-style reset
-                    var appGraphClient = await _graphApiService.GetApplicationGraphClientAsync();
-                    await appGraphClient.Users[user.Id].PatchAsync(new Microsoft.Graph.Models.User
-                    {
-                        PasswordProfile = new Microsoft.Graph.Models.PasswordProfile
-                        {
-                            Password = NewPassword,
-                            ForceChangePasswordNextSignIn = false
-                        }
-                    });
-
-                    TempData["SuccessMessage"] = "Password reset. Please sign in again with the new password.";
-                    return RedirectToAction(nameof(Profile));
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Error resetting password through Graph API App");
-                    TempData["Error"] = "An unexpected error occurred while changing your password. Please try again.";
-                    return RedirectToAction(nameof(Profile));
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error in ResetPassword action");
-                TempData["Error"] = "An unexpected error occurred while changing your password. Please try again.";
-                return RedirectToAction(nameof(Profile));
-            }
-        }
-
-
-
-        private bool IsPasswordComplex(string password)
-        {
-            // Password complexity requirements for Azure Entra External ID
-            var hasMinLength = password.Length >= 8;
-            var hasUpperCase = password.Any(char.IsUpper);
-            var hasLowerCase = password.Any(char.IsLower);
-            var hasDigit = password.Any(char.IsDigit);
-            var hasSpecialChar = password.Any(c => !char.IsLetterOrDigit(c));
-
-            return hasMinLength && hasUpperCase && hasLowerCase && hasDigit && hasSpecialChar;
-        }
-
-
-
 
         [Authorize]
         public async Task<IActionResult> MultiAppInfo()
@@ -1165,6 +1820,241 @@ namespace Ext_ID_OIDC_web_Application.Controllers
             }
         }
 
+
+        [Authorize]
+        public async Task<IActionResult> DebugProfileApi()
+        {
+            try
+            {
+                var debugInfo = new Dictionary<string, object>();
+                
+                // Get authentication scheme
+                var authScheme = User.Claims.FirstOrDefault(c => c.Type == "auth_scheme")?.Value;
+                debugInfo["AuthenticationScheme"] = authScheme;
+                
+                // Get all email-related claims
+                var emailClaims = new Dictionary<string, string>();
+                var possibleEmailClaimTypes = new[] {
+                    "email", "preferred_username", "emails",
+                    "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress",
+                    "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn",
+                    "upn", ClaimTypes.Email, ClaimTypes.Upn, "unique_name"
+                };
+                
+                foreach (var claimType in possibleEmailClaimTypes)
+                {
+                    var claimValue = User.Claims.FirstOrDefault(c => c.Type == claimType)?.Value;
+                    if (!string.IsNullOrEmpty(claimValue))
+                    {
+                        emailClaims[claimType] = claimValue;
+                    }
+                }
+                debugInfo["EmailClaims"] = emailClaims;
+                
+                // Try to extract email using the same logic as Profile method
+                var userEmail = User.Claims.FirstOrDefault(c => 
+                    c.Type == "email" || 
+                    c.Type == "preferred_username" || 
+                    c.Type == "emails" ||
+                    c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress" ||
+                    c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn" ||
+                    c.Type == "upn" ||
+                    c.Type == ClaimTypes.Email ||
+                    c.Type == ClaimTypes.Upn
+                )?.Value;
+                
+                debugInfo["ExtractedEmail"] = userEmail;
+                
+                // Try to get email from Graph API if not found in claims
+                if (string.IsNullOrEmpty(userEmail))
+                {
+                    try
+                    {
+                        var graphClient = await _graphApiService.GetDelegatedGraphClientAsync();
+                        var user = await graphClient.Me.GetAsync();
+                        userEmail = user.Mail ?? user.UserPrincipalName;
+                        debugInfo["GraphApiEmail"] = userEmail;
+                        debugInfo["GraphApiUser"] = new
+                        {
+                            DisplayName = user.DisplayName,
+                            Mail = user.Mail,
+                            UserPrincipalName = user.UserPrincipalName,
+                            Id = user.Id
+                        };
+                    }
+                    catch (Exception graphEx)
+                    {
+                        debugInfo["GraphApiError"] = graphEx.Message;
+                    }
+                }
+                
+                if (string.IsNullOrEmpty(userEmail))
+                {
+                    debugInfo["Error"] = "No email found in claims or Graph API";
+                    return Json(debugInfo);
+                }
+                
+                // Get access token
+                string accessToken = null;
+                try
+                {
+                    accessToken = await HttpContext.GetTokenAsync("access_token");
+                    if (string.IsNullOrEmpty(accessToken) && !string.IsNullOrEmpty(authScheme))
+                    {
+                        accessToken = await HttpContext.GetTokenAsync(authScheme, "access_token");
+                    }
+                    debugInfo["HasAccessToken"] = !string.IsNullOrEmpty(accessToken);
+                    debugInfo["AccessTokenPreview"] = !string.IsNullOrEmpty(accessToken) ? 
+                        accessToken.Substring(0, Math.Min(50, accessToken.Length)) + "..." : null;
+                }
+                catch (Exception tokenEx)
+                {
+                    debugInfo["TokenError"] = tokenEx.Message;
+                }
+                
+                // Test the external API call
+                var httpClient = _httpClientFactory.CreateClient();
+                
+                // Add authentication header if access token is available
+                if (!string.IsNullOrEmpty(accessToken))
+                {
+                    httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+                }
+                
+                var baseUrl = _configuration["MultiAppConfig:ExternalApi:BaseUrl"];
+                var endpoint = _configuration["MultiAppConfig:ExternalApi:GetUserByEmailEndpoint"];
+                var apiUrl = $"{baseUrl}{endpoint}?email={Uri.EscapeDataString(userEmail)}";
+                
+                debugInfo["ApiCall"] = new
+                {
+                    BaseUrl = baseUrl,
+                    Endpoint = endpoint,
+                    FullUrl = apiUrl,
+                    EmailParameter = userEmail,
+                    EncodedEmail = Uri.EscapeDataString(userEmail)
+                };
+                
+                try
+                {
+                    var response = await httpClient.GetAsync(apiUrl);
+                    var responseContent = await response.Content.ReadAsStringAsync();
+                    
+                    debugInfo["ApiResponse"] = new
+                    {
+                        StatusCode = (int)response.StatusCode,
+                        StatusDescription = response.StatusCode.ToString(),
+                        IsSuccess = response.IsSuccessStatusCode,
+                        Headers = response.Headers.ToDictionary(h => h.Key, h => string.Join(", ", h.Value)),
+                        ContentLength = responseContent?.Length ?? 0,
+                        ResponseBody = responseContent
+                    };
+                }
+                catch (Exception apiEx)
+                {
+                    debugInfo["ApiError"] = apiEx.Message;
+                }
+                
+                return Json(debugInfo);
+            }
+            catch (Exception ex)
+            {
+                return Json(new { Error = ex.Message, StackTrace = ex.StackTrace });
+            }
+        }
+
+        [Authorize]
+        public async Task<IActionResult> DebugTokens()
+        {
+            try
+            {
+                var tokenInfo = new Dictionary<string, object>();
+                
+                // Try to get various tokens
+                var tokenTypes = new[] { "access_token", "id_token", "refresh_token" };
+                var schemes = new[] { "App1Scheme", "App2Scheme", "App3Scheme" };
+                
+                // Check general tokens
+                foreach (var tokenType in tokenTypes)
+                {
+                    try
+                    {
+                        var token = await HttpContext.GetTokenAsync(tokenType);
+                        tokenInfo[$"General_{tokenType}"] = new 
+                        {
+                            HasToken = !string.IsNullOrEmpty(token),
+                            Preview = !string.IsNullOrEmpty(token) ? token.Substring(0, Math.Min(20, token.Length)) + "..." : null
+                        };
+                    }
+                    catch (Exception ex)
+                    {
+                        tokenInfo[$"General_{tokenType}"] = new { Error = ex.Message };
+                    }
+                }
+                
+                // Check scheme-specific tokens
+                foreach (var scheme in schemes)
+                {
+                    foreach (var tokenType in tokenTypes)
+                    {
+                        try
+                        {
+                            var token = await HttpContext.GetTokenAsync(scheme, tokenType);
+                            tokenInfo[$"{scheme}_{tokenType}"] = new 
+                            {
+                                HasToken = !string.IsNullOrEmpty(token),
+                                Preview = !string.IsNullOrEmpty(token) ? token.Substring(0, Math.Min(20, token.Length)) + "..." : null
+                            };
+                        }
+                        catch (Exception ex)
+                        {
+                            tokenInfo[$"{scheme}_{tokenType}"] = new { Error = ex.Message };
+                        }
+                    }
+                }
+                
+                return Json(new
+                {
+                    AuthenticationScheme = User.Claims.FirstOrDefault(c => c.Type == "auth_scheme")?.Value,
+                    IsAuthenticated = User.Identity?.IsAuthenticated ?? false,
+                    Tokens = tokenInfo
+                });
+            }
+            catch (Exception ex)
+            {
+                return Json(new { Error = ex.Message });
+            }
+        }
+        
+        [Authorize]
+        public IActionResult DebugClaims()
+        {
+            var claims = User.Claims.Select(c => new 
+            {
+                Type = c.Type,
+                Value = c.Value,
+                Issuer = c.Issuer
+            }).ToList();
+
+            return Json(new 
+            {
+                IsAuthenticated = User.Identity?.IsAuthenticated ?? false,
+                AuthenticationType = User.Identity?.AuthenticationType,
+                Name = User.Identity?.Name,
+                ClaimsCount = claims.Count,
+                Claims = claims,
+                // Test email extraction
+                EmailTests = new 
+                {
+                    Email = User.Claims.FirstOrDefault(c => c.Type == "email")?.Value,
+                    PreferredUsername = User.Claims.FirstOrDefault(c => c.Type == "preferred_username")?.Value,
+                    Emails = User.Claims.FirstOrDefault(c => c.Type == "emails")?.Value,
+                    EmailAddress = User.Claims.FirstOrDefault(c => c.Type == ClaimTypes.Email)?.Value,
+                    Upn = User.Claims.FirstOrDefault(c => c.Type == ClaimTypes.Upn)?.Value,
+                    Name = User.Claims.FirstOrDefault(c => c.Type == "name")?.Value,
+                    Oid = User.Claims.FirstOrDefault(c => c.Type == "oid")?.Value
+                }
+            });
+        }
 
         private async Task<object> GetGraphApiUserInfo()
         {

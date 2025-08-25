@@ -16,8 +16,8 @@ function validatePassword(password) {
 
 // Initialize password validation
 document.addEventListener('DOMContentLoaded', function() {
-    const newPasswordInput = document.getElementById('NewPassword');
-    const confirmPasswordInput = document.getElementById('ConfirmPassword');
+    const newPasswordInput = document.getElementById('newPassword') || document.getElementById('NewPassword');
+    const confirmPasswordInput = document.getElementById('confirmPassword') || document.getElementById('ConfirmPassword');
 
     if (newPasswordInput) {
         newPasswordInput.addEventListener('input', function() {
