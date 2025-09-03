@@ -62,7 +62,7 @@
                         <dd class="col-sm-8">@Model.Email</dd>
                     </dl>
                 </div>
-                <div class="col-md-6">
+                @* <div class="col-md-6">
                     <dl class="row">
                         <dt class="col-sm-4">Street Address</dt>
                         <dd class="col-sm-8 @(Model.UpdatedFields?.Contains("StreetAddress") == true ? "text-success fw-bold" : "")">
@@ -100,16 +100,16 @@
                             }
                         </dd>
                     </dl>
-                </div>
+                </div> *@
             </div>
         </div>
     </div>
 
     <div class="mt-3">
         <a asp-action="EditProfile" class="btn btn-primary">Edit Profile</a>
-        <button type="button" class="btn btn-warning" data-bs-toggle="modal" data-bs-target="#resetPasswordModal">
+        @* <button type="button" class="btn btn-warning" data-bs-toggle="modal" data-bs-target="#resetPasswordModal">
             Reset Password
-        </button>
+        </button> *@
         <button type="button" class="btn btn-danger" data-bs-toggle="modal" data-bs-target="#deleteProfileModal">
             Delete Profile
         </button>
